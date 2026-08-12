@@ -2,7 +2,7 @@
   "name": "claude-remote",
   "displayName": "Claude Remote Launcher",
   "description": "Launch Claude Code Remote Control sessions in a detached tmux pane and get the claude.ai/code URL.",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "author": {
     "name": "superbereza"
   },

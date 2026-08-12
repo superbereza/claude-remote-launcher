@@ -46,9 +46,9 @@ resolve_claude() {
 usage() {
     cat <<EOF
 Usage:
-  claude-remote <path> [name] [--url] [--resume <uuid>] [--model <m>] [--effort <e>]
+  claude-remote <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]
                                               Spawn a session (default action)
-  claude-remote spawn <path> [name] [--url] [--resume <uuid>] [--model <m>] [--effort <e>]
+  claude-remote spawn <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]
                                               Same as above, explicit
   claude-remote ls                            List running cc— tmux sessions
   claude-remote kill <session>                Kill one tmux session
@@ -63,6 +63,8 @@ Args:
 
 Flags:
   --url, -u           Also print the claude.ai/code URL. Default: status only.
+  --prompt <text>     Seed the new chat: once it's up, type <text> into the pane and
+  -p <text>           submit it — the fresh session starts working on it immediately.
   --resume <uuid>     Resume an existing session by UUID in the new tmux pane
   -r <uuid>           (instead of starting a fresh conversation).
   --model <m>         Launch on a specific model (alias: opus/sonnet/fable, or a
@@ -85,6 +87,61 @@ EOF
 
 die() { echo "claude-remote: $*" >&2; exit 1; }
 
+# _bridge_up <tmux_name> <abs_cwd> — is Remote Control REGISTERED for this session?
+# Authoritative signal alongside the TUI scrape: Claude writes ~/.claude/sessions/<pid>.json per
+# running process, and it gains a `bridgeSessionId` once Remote Control is up (absence = not yet;
+# presence = up — decisive for confirming STARTUP). Two matchers, in order:
+#   1. via the SESSION — the state file whose cwd is this launch dir (real-path matched, unique).
+#   2. fallback via the PANEL — match by the tmux pane's process tree (disambiguates a shared cwd,
+#      or a cwd that didn't resolve-match).
+# Returns 0 iff a matching state file has a bridgeSessionId. Best-effort: returns 1 (not 0) if
+# python3 / the state file are absent, so the caller still relies on the pane-scrape signal.
+_bridge_up() {
+    local tmux_name="$1" abs_cwd="$2"
+    command -v python3 >/dev/null || return 1
+    python3 - "$tmux_name" "$abs_cwd" <<'PY'
+import glob, json, os, subprocess, sys
+tmux_name, want = sys.argv[1], sys.argv[2]
+rp = os.path.realpath(want)
+states = []
+for f in glob.glob(os.path.expanduser("~/.claude/sessions/*.json")):
+    try: states.append(json.load(open(f)))
+    except Exception: pass
+
+# 1) via the session: unique state file whose cwd is this launch dir
+by_cwd = [d for d in states if d.get("cwd") and os.path.realpath(d["cwd"]) == rp]
+if len(by_cwd) == 1:
+    sys.exit(0 if by_cwd[0].get("bridgeSessionId") else 1)
+
+# 2) fallback via the panel: the tmux pane's process tree
+try:
+    pane_pid = int(subprocess.run(
+        ["tmux", "list-panes", "-t", tmux_name, "-F", "#{pane_pid}"],
+        capture_output=True, text=True).stdout.split()[0])
+except Exception:
+    pane_pid = 0
+if pane_pid:
+    children = {}
+    for s in glob.glob("/proc/[0-9]*/stat"):
+        try:
+            txt = open(s).read()
+            pid = int(os.path.basename(os.path.dirname(s)))
+            ppid = int(txt.rsplit(") ", 1)[1].split()[1])
+        except Exception:
+            continue
+        children.setdefault(ppid, []).append(pid)
+    tree, stack = set(), [pane_pid]
+    while stack:
+        p = stack.pop()
+        if p in tree: continue
+        tree.add(p); stack += children.get(p, [])
+    for d in states:
+        if d.get("pid") in tree:
+            sys.exit(0 if d.get("bridgeSessionId") else 1)
+sys.exit(1)
+PY
+}
+
 # ---------------------------------------------------------------------------
 # spawn
 # ---------------------------------------------------------------------------
@@ -99,10 +156,16 @@ cmd_spawn() {
     local resume_uuid=""
     local model=""
     local effort=""
+    local start_prompt=""
     local -a pos=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --url|-u)   show_url=1 ;;
+            --prompt|-p)
+                [[ -n "${2:-}" ]] || die "--prompt requires text"
+                start_prompt="$2"
+                shift
+                ;;
             --resume|-r)
                 [[ -n "${2:-}" ]] || die "--resume requires a session UUID"
                 resume_uuid="$2"
@@ -278,6 +341,11 @@ PYEOF
         # late or scroll out of the captured window, which used to cause a false
         # "not detected" + exit 1 even though RC was up.
         printf '%s' "$pane" | grep -q 'Remote Control active' && rc_active=1
+        # Corroborating AUTHORITATIVE signal — Remote Control registered in the state file
+        # (bridgeSessionId). OR'd with the TUI scrape above: whichever confirms first wins, so a
+        # lagging/reworded status bar no longer false-fails a session that's actually up. Only
+        # probed until confirmed, to avoid the per-iteration cost once rc_active is set.
+        (( rc_active )) || { _bridge_up "$tmux_name" "$abs_path" && rc_active=1; }
         if [[ -z "$url" ]]; then
             url=$(printf '%s' "$pane" | grep -oE 'https://claude\.ai/code[/?][A-Za-z0-9._~:/?#@!$&+=%-]+' | tail -1 || true)
         fi
@@ -285,6 +353,17 @@ PYEOF
         if (( rc_active )) && { (( !show_url )) || [[ -n "$url" ]]; }; then break; fi
         sleep "$POLL_INTERVAL_S"
     done
+
+    # --prompt: seed the fresh chat — type the starting prompt into the pane and submit it.
+    # Sent literally (-l; -- guards a leading dash) once Remote Control is confirmed up, so it
+    # lands in the now-clear composer. tmux needs a beat between the text and the Enter.
+    local prompt_sent=0
+    if [[ -n "$start_prompt" ]] && (( rc_active )); then
+        tmux send-keys -t "$tmux_name" -l -- "$start_prompt"
+        sleep 0.4
+        tmux send-keys -t "$tmux_name" Enter
+        prompt_sent=1
+    fi
 
     printf 'SESSION: %s\n' "$tmux_name"
     if (( show_url )); then
@@ -303,6 +382,7 @@ PYEOF
         fi
     fi
     printf "ATTACH:  tmux attach -t '%s'\n" "$tmux_name"
+    (( prompt_sent )) && printf 'PROMPT:  sent (%d chars)\n' "${#start_prompt}"
 
     # Fail only if Remote Control genuinely never activated (not merely "no URL").
     if (( !rc_active )); then

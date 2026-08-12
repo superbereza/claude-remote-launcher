@@ -22,6 +22,7 @@ Call `claude-remote` directly. It's a self-contained bash script — no build/ve
 ```bash
 claude-remote <path> [name]          # spawn a session; name defaults to the folder
 claude-remote <path> [name] --url    # also print the claude.ai/code URL
+claude-remote <path> [name] --prompt "fix the failing tests"   # seed the new chat with a starting task
 claude-remote ls                     # list running cc— tmux sessions
 claude-remote kill <session>         # kill one session
 claude-remote kill --all             # kill all cc— sessions

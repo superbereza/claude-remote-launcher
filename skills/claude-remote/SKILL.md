@@ -1,6 +1,6 @@
 ---
 name: claude-remote
-description: Spawn a Claude Code remote-control session in a detached tmux pane. By default it just confirms the session started (the remote chat appears automatically on the user's device); pass --url to also print the claude.ai/code link. Use to launch fresh Claude sessions in existing or brand-new project folders without leaving the current session.
+description: Create a NEW Claude Code chat/session in any project folder (existing or brand-new) without leaving the current one — use for "create another chat with Claude", "spin up / start a new session", "open a new chat in <folder>", hand a task off to a fresh session, seed a new project, or run a parallel session in another repo. The new chat opens automatically as a Remote Control conversation on the user's device (phone / claude.ai/code), drivable from anywhere; pass --url to also print the link, or --prompt "<text>" to seed the new chat with a starting task. Runs in a detached tmux pane.
 ---
 
 # claude-remote
@@ -9,12 +9,17 @@ Use `claude-remote` to spin up a fresh Claude Code session in any folder. The re
 
 > **Invoking `claude-remote`:** call `claude-remote` directly. It's a self-contained bash script — no setup step.
 
+> **You rarely need the URL.** Newer Claude Code versions **auto-attach Remote Control** — a spawned
+> session appears on the user's device (phone / `claude.ai/code`) on its own, listed by its chat title.
+> So the default (status only, no link) is almost always right: just tell the user the session is up
+> and its name. Only pass `--url` when the user explicitly asks for a clickable link.
+
 ## Subcommands
 
 | Command | Action |
 |---------|--------|
-| `claude-remote <path> [name] [--url] [--resume <uuid>] [--model <m>] [--effort <e>]` | Spawn a session (default action; equivalent to `spawn`) |
-| `claude-remote spawn <path> [name] [--url] [--resume <uuid>] [--model <m>] [--effort <e>]` | Same as above, explicit |
+| `claude-remote <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]` | Spawn a session (default action; equivalent to `spawn`) |
+| `claude-remote spawn <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]` | Same as above, explicit |
 | `claude-remote ls` | List running `cc—` tmux sessions with their cwd |
 | `claude-remote kill <session>` | Kill one tmux session |
 | `claude-remote kill --all` | Kill all `cc—` tmux sessions |
@@ -56,6 +61,7 @@ claude-remote kill --all
 | Flag | Effect |
 |------|--------|
 | `--url`, `-u` | Also print the `claude.ai/code` URL. **Default: status only** (no link). |
+| `--prompt <text>`, `-p <text>` | **Seed the new chat.** Once Remote Control is up, the text is typed into the pane and submitted, so the fresh session immediately starts working on it. Great for "create a chat in X and have it do Y" in one call. |
 | `--resume <uuid>`, `-r <uuid>` | Resume an existing session by UUID in the new tmux pane (instead of starting a fresh conversation). The session must exist in `~/.claude/projects/<cwd>/`. |
 | `--model <m>`, `-m <m>` | Launch the session on a specific model — an alias (`opus`, `sonnet`, `fable`) or a full id (`claude-opus-4-8`). Omit to use claude's own default. See **Choosing the model & effort** below. |
 | `--effort <e>`, `-e <e>` | Launch with an effort level: `low`, `medium`, `high`, `xhigh`, `max`. Omit to use claude's own default. |
@@ -96,8 +102,9 @@ URL:     https://claude.ai/code/...
 ```
 
 Exit code is `1` **only if Remote Control didn't activate** within 45s. A missing `--url`
-link while RC is active is **not** a failure — the success signal is the "Remote Control
-active" status bar, not the URL (which can appear late or scroll out of view).
+link while RC is active is **not** a failure — the success signal is Remote Control being up
+(the "Remote Control active" status bar **or** a `bridgeSessionId` in the state file), not the
+URL (which can appear late or scroll out of view).
 
 ## What it does
 
@@ -108,8 +115,8 @@ active" status bar, not the URL (which can appear late or scroll out of view).
 5. Runs `claude --dangerously-skip-permissions` inside (interactive TUI).
 6. Waits for `bypass permissions on` to show in the bottom bar (TUI ready). Trust dialog is skipped thanks to step 3.
 7. Sends `/remote-control <name>` slash command to enable Remote Control (name defaults to the folder).
-8. Polls `tmux capture-pane` for the `https://claude.ai/code/...` URL (up to 30s) to confirm it came up.
-9. Prints the status (or the URL with `--url`). Tmux session keeps running.
+8. Confirms Remote Control came up — from **two** signals, whichever fires first: the `Remote Control active` status bar in the pane, **or** a `bridgeSessionId` in Claude's per-process state file `~/.claude/sessions/<pid>.json` (authoritative — matched to this session by cwd, else by the pane's process tree). This makes startup detection robust to a lagging/reworded status bar.
+9. With `--prompt <text>`, types the starting prompt into the pane and submits it. Prints the status (or the URL with `--url`). Tmux session keeps running.
 
 ## Why slash, not `claude remote-control` server mode
 
