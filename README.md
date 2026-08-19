@@ -74,7 +74,7 @@ With `--url` the `STATUS` line becomes `URL: https://claude.ai/code/...`. The su
 | `claude-remote <path> [name] [--url] [--prompt <text>]` | Spawn (default; same as `spawn`) |
 | `claude-remote spawn <path> [name] [--url] [--prompt <text>]` | Spawn, explicit |
 | `claude-remote ls` | List running `cc—` tmux sessions |
-| `claude-remote send <session> <text…>` | Send a message into an **existing** session and submit it (drive a live chat; `--prompt` seeds a *new* one) |
+| `claude-remote send [--raw] <session> <text…>` | Send a message into an **existing** session and submit it (drive a live chat; `--prompt` seeds a *new* one). Prefixes a `[from <you> — to reply: …]` header so the receiver can answer back; `--raw` omits it |
 | `claude-remote kill <session>` | Kill one |
 | `claude-remote kill --all` | Kill all `cc—` sessions |
 | `claude-remote self-close` | From **inside** a session: deregister from [claude-keep](https://github.com/superbereza/claude-session-keeper) (if tracked) then kill its own tmux |

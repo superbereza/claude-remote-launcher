@@ -21,7 +21,7 @@ Use `claude-remote` to spin up a fresh Claude Code session in any folder. The re
 | `claude-remote <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]` | Spawn a session (default action; equivalent to `spawn`) |
 | `claude-remote spawn <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]` | Same as above, explicit |
 | `claude-remote ls` | List running `cc—` tmux sessions with their cwd |
-| `claude-remote send <session> <text…>` | Send a message into an **existing** session's pane and submit it (the "talk to a session that's already running" op — `spawn --prompt` seeds a *new* chat, this drives a live one). Sent literally; if the target is mid-generation the message just queues. |
+| `claude-remote send [--raw] <session> <text…>` | Send a message into an **existing** session's pane and submit it (the "talk to a session that's already running" op — `spawn --prompt` seeds a *new* chat, this drives a live one). Prefixes a **`[from <this session> — to reply: claude-remote send '<this session>' "…"]`** header so the receiver knows who's asking and how to answer back; `--raw` sends verbatim (no header). If the target is mid-generation the message just queues. |
 | `claude-remote kill <session>` | Kill one tmux session |
 | `claude-remote kill --all` | Kill all `cc—` tmux sessions |
 | `claude-remote self-close` | Run **from inside** a session to end itself: deregister from `claude-keep` (if that skill is installed and the session is tracked), then kill its own tmux session. See note below. |
@@ -122,9 +122,14 @@ URL (which can appear late or scroll out of view).
 
 ## Talking to a running session, and ending one (`send` / `self-close`)
 
-- **`send <session> <text…>`** drives a session that's **already up** — it types the text into that
-  session's pane and submits it. (`spawn --prompt` seeds a *brand-new* chat; `send` is for a live one.)
-  If the target is mid-generation the message simply queues.
+- **`send [--raw] <session> <text…>`** drives a session that's **already up** — it types the text into
+  that session's pane and submits it. (`spawn --prompt` seeds a *brand-new* chat; `send` is for a live
+  one.) If the target is mid-generation the message simply queues.
+  - **Sender header (default):** the message is prefixed with `[from <your session> — to reply:
+    claude-remote send '<your session>' "<your answer>"]`, so the receiver knows **whose** question it
+    is and exactly **how to answer back** — turning `send` into a two-way, session-to-session channel.
+    The sender is this command's own tmux session (`$TMUX`). Pass **`--raw`** to omit the header (for
+    injecting a plain command/prompt, not a session-to-session message).
 - **`self-close`** lets a session end **itself** — run it from inside the session. It does two things,
   and they belong to **two different skills**, so it keeps them decoupled:
   1. **Deregister from the registry** — that's `claude-session-keeper`'s job, so `self-close`

@@ -51,7 +51,9 @@ Usage:
   claude-remote spawn <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]
                                               Same as above, explicit
   claude-remote ls                            List running cc— tmux sessions
-  claude-remote send <session> <text…>        Send a message into an EXISTING session and submit it
+  claude-remote send [--raw] <session> <text…>  Send a message into an EXISTING session and submit it.
+                                              Prefixes a "from <this session> — reply: …" header so the
+                                              receiver knows who asked and how to answer back; --raw omits it.
   claude-remote kill <session>                Kill one tmux session
   claude-remote kill --all                    Kill all cc— tmux sessions
   claude-remote self-close                    From INSIDE a session: deregister from claude-keep (if
@@ -484,15 +486,23 @@ cmd_kill() {
 }
 
 # ---------------------------------------------------------------------------
-# send — inject text into an EXISTING session's pane and submit it. The "talk to a
-# session that's already running" gap: spawn seeds a NEW chat (--prompt), this drives
-# an existing one. Sent literally (-l; -- guards a leading dash). If the target is
-# mid-generation the message simply queues (Claude handles the queue) — we note, not block.
+# send [--raw] <session> <text…> — inject a message into an EXISTING session's pane and
+# submit it. The "talk to a session that's already running" gap: spawn seeds a NEW chat
+# (--prompt), this drives an existing one. Sent literally (-l; -- guards a leading dash);
+# if the target is mid-generation the message simply queues (Claude handles the queue).
+#
+# By default the message is prefixed with a one-line header naming the SENDER session and
+# how to reply — so the receiver knows whose question it is and can answer back:
+#     [from cc—X — reply: claude-remote send 'cc—X' "…"] <text>
+# The sender is this command's own tmux session ($TMUX). Pass --raw to send verbatim (no
+# header) — e.g. when injecting a command/prompt rather than a session-to-session message.
 # ---------------------------------------------------------------------------
 cmd_send() {
+    local raw=0 from=""
+    [[ "${1:-}" == "--raw" ]] && { raw=1; shift; }
     local name="${1:-}"; shift || true
     local text="$*"
-    [[ -n "$name" ]] || die "send: usage: claude-remote send <session> <text…>"
+    [[ -n "$name" ]] || die "send: usage: claude-remote send [--raw] <session> <text…>"
     [[ -n "$text" ]] || die "send: nothing to send (give the message after the session name)"
     command -v tmux >/dev/null || die "tmux not found"
     # Resolve to a pane id — em-dash/slash session names don't match reliably via -t "=name".
@@ -500,13 +510,19 @@ cmd_send() {
     pane=$(tmux list-panes -a -F "#{session_name}"$'\t'"#{pane_id}" 2>/dev/null \
              | awk -F'\t' -v s="$name" '$1==s{print $2; exit}')
     [[ -n "$pane" ]] || die "send: no such session: $name"
+    # Prefix with sender + reply hint, unless --raw or we're not inside a (different) session.
+    if (( ! raw )); then
+        from=$(tmux display-message -p '#{session_name}' 2>/dev/null || true)
+        [[ -n "$from" && "$from" != "$name" ]] && \
+            text="[from ${from} — to reply: claude-remote send '${from}' \"<your answer>\"] ${text}"
+    fi
     if tmux capture-pane -p -J -t "$pane" -S -3 2>/dev/null | grep -q 'esc to interrupt'; then
         echo "note: '$name' is busy — the message will queue until it's idle" >&2
     fi
     tmux send-keys -t "$pane" -l -- "$text"
     sleep 0.4
     tmux send-keys -t "$pane" Enter
-    echo "sent to $name (${#text} chars)"
+    echo "sent to $name (${#text} chars${from:+, from $from})"
 }
 
 # ---------------------------------------------------------------------------
