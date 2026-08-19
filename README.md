@@ -50,6 +50,12 @@ claude-remote ~/dev/myproject debug-auth
 
 # Also print the claude.ai/code URL
 claude-remote ~/dev/myproject --url
+
+# Seed the new chat with a starting task (typed in + submitted once it's up)
+claude-remote ~/dev/myproject --prompt "scaffold a FastAPI service with a health check"
+
+# Send a message into a session that's ALREADY running
+claude-remote send 'cc—myproject' "run the tests and summarize failures"
 ```
 
 Default output (status only):
@@ -59,19 +65,21 @@ STATUS:  remote-control active
 ATTACH:  tmux attach -t 'cc—myproject'
 ```
 
-With `--url` the `STATUS` line becomes `URL: https://claude.ai/code/...`. Exit code is `1` if the remote-control URL doesn't appear within 30s.
+With `--url` the `STATUS` line becomes `URL: https://claude.ai/code/...`. The success signal is Remote Control coming up (its status bar **or** a `bridgeSessionId` in the session's state file) — exit code is `1` only if RC doesn't activate; a missing `--url` link while RC is active is **not** a failure. Newer Claude auto-attaches Remote Control, so you rarely need the URL at all.
 
 ## Subcommands
 
 | Command | Action |
 |---------|--------|
-| `claude-remote <path> [name] [--url]` | Spawn (default; same as `spawn`) |
-| `claude-remote spawn <path> [name] [--url]` | Spawn, explicit |
+| `claude-remote <path> [name] [--url] [--prompt <text>]` | Spawn (default; same as `spawn`) |
+| `claude-remote spawn <path> [name] [--url] [--prompt <text>]` | Spawn, explicit |
 | `claude-remote ls` | List running `cc—` tmux sessions |
+| `claude-remote send <session> <text…>` | Send a message into an **existing** session and submit it (drive a live chat; `--prompt` seeds a *new* one) |
 | `claude-remote kill <session>` | Kill one |
 | `claude-remote kill --all` | Kill all `cc—` sessions |
+| `claude-remote self-close` | From **inside** a session: deregister from [claude-keep](https://github.com/superbereza/claude-session-keeper) (if tracked) then kill its own tmux |
 | `claude-remote refresh <session>` | Re-issue `/remote-control` inside an existing pane → fresh URL, same chat |
-| `claude-remote --version` | Print version |
+| `claude-remote help` / `--version` | Show usage / print version |
 
 The session `name` is the remote-control chat title, **used verbatim** — nothing is
 prepended automatically, so include a `device/` prefix yourself if you use that
