@@ -66,6 +66,9 @@ Args:
   [name]   Session name = remote-control chat title. Default: the folder name.
            Pass it in full (e.g. "mac-mini/ai-auth-lib") for a "device/" prefix —
            nothing is prepended automatically.
+  <session>  (for send/kill) Refer to a session by its Claude Code chat title — the `cc—`
+           tmux prefix is optional. Accepts the full title ("dev-serv-in/fleetos-devops"),
+           a bare tail ("fleetos-devops"), or the raw tmux name. Ambiguous → error (no guessing).
 
 Flags:
   --url, -u           Also print the claude.ai/code URL. Default: status only.
@@ -473,16 +476,41 @@ cmd_kill() {
             done <<< "$names"
             ;;
         *)
-            local name="$1"
-            if tmux has-session -t "$name" 2>/dev/null; then
-                tmux kill-session -t "$name"
-                echo "killed: $name"
-            else
-                echo "no such session: $name" >&2
-                exit 1
-            fi
+            local name
+            name=$(_resolve_session "$1") || exit 1   # accept chat title / bare name / full tmux name
+            tmux kill-session -t "=$name" && echo "killed: ${name#cc—}"
             ;;
     esac
+}
+
+# ---------------------------------------------------------------------------
+# _resolve_session <id> — map a user-given identifier to its exact `cc—…` tmux session name.
+# The user thinks in Claude Code chat titles (what the device shows); the `cc—` tmux prefix is an
+# internal detail. Accepts, in match order:
+#   1. the full tmux name        cc—dev-serv-in/fleetos-devops
+#   2. the chat title (no cc—)   dev-serv-in/fleetos-devops
+#   3. a bare tail               fleetos-devops   (the segment after device/, matched as a WHOLE
+#                                segment — "fleetos" matches …/fleetos, NOT …/fleetos-devops)
+# Prints the resolved name on success; on ambiguity or no match, prints an error and returns non-zero
+# (never guesses). Used by `send` and `kill`.
+# ---------------------------------------------------------------------------
+_resolve_session() {
+    local q="$1" names n
+    local -a hits=()
+    names=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^cc—' || true)
+    [[ -n "$names" ]] || { echo "no cc— sessions running" >&2; return 1; }
+    while IFS= read -r n; do [[ "$n" == "$q" ]]     && { printf '%s\n' "$n"; return 0; }; done <<< "$names"
+    while IFS= read -r n; do [[ "$n" == "cc—$q" ]]  && { printf '%s\n' "$n"; return 0; }; done <<< "$names"
+    while IFS= read -r n; do
+        [[ "$n" == *"/$q" || "${n#cc—}" == "$q" ]] && hits+=("$n")
+    done <<< "$names"
+    if (( ${#hits[@]} == 1 )); then printf '%s\n' "${hits[0]}"; return 0; fi
+    if (( ${#hits[@]} > 1 )); then
+        { echo "ambiguous session '$q' — matches:"; printf '  %s\n' "${hits[@]}"; echo "be more specific."; } >&2
+        return 2
+    fi
+    echo "no such session: $q" >&2
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -498,31 +526,34 @@ cmd_kill() {
 # header) — e.g. when injecting a command/prompt rather than a session-to-session message.
 # ---------------------------------------------------------------------------
 cmd_send() {
-    local raw=0 from=""
+    local raw=0 from="" from_clean=""
     [[ "${1:-}" == "--raw" ]] && { raw=1; shift; }
-    local name="${1:-}"; shift || true
+    local q="${1:-}"; shift || true
     local text="$*"
-    [[ -n "$name" ]] || die "send: usage: claude-remote send [--raw] <session> <text…>"
+    [[ -n "$q" ]] || die "send: usage: claude-remote send [--raw] <session> <text…>"
     [[ -n "$text" ]] || die "send: nothing to send (give the message after the session name)"
     command -v tmux >/dev/null || die "tmux not found"
-    # Resolve to a pane id — em-dash/slash session names don't match reliably via -t "=name".
+    # Accept a chat title / bare name / full tmux name — resolve to the exact tmux session.
+    local name; name=$(_resolve_session "$q") || exit 1
     local pane
     pane=$(tmux list-panes -a -F "#{session_name}"$'\t'"#{pane_id}" 2>/dev/null \
              | awk -F'\t' -v s="$name" '$1==s{print $2; exit}')
-    [[ -n "$pane" ]] || die "send: no such session: $name"
-    # Prefix with sender + reply hint, unless --raw or we're not inside a (different) session.
+    [[ -n "$pane" ]] || die "send: no pane for $name"
+    # Prefix with sender + reply hint (using the CLEAN chat title, no cc—, so the reply command is
+    # copy-pasteable), unless --raw or we're not inside a (different) session.
     if (( ! raw )); then
         from=$(tmux display-message -p '#{session_name}' 2>/dev/null || true)
+        from_clean="${from#cc—}"
         [[ -n "$from" && "$from" != "$name" ]] && \
-            text="[from ${from} — to reply: claude-remote send '${from}' \"<your answer>\"] ${text}"
+            text="[from ${from_clean} — to reply: claude-remote send '${from_clean}' \"<your answer>\"] ${text}"
     fi
     if tmux capture-pane -p -J -t "$pane" -S -3 2>/dev/null | grep -q 'esc to interrupt'; then
-        echo "note: '$name' is busy — the message will queue until it's idle" >&2
+        echo "note: '${name#cc—}' is busy — the message will queue until it's idle" >&2
     fi
     tmux send-keys -t "$pane" -l -- "$text"
     sleep 0.4
     tmux send-keys -t "$pane" Enter
-    echo "sent to $name (${#text} chars${from:+, from $from})"
+    echo "sent to ${name#cc—} (${#text} chars${from_clean:+, from $from_clean})"
 }
 
 # ---------------------------------------------------------------------------

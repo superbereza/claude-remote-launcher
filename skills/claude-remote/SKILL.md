@@ -122,6 +122,11 @@ URL (which can appear late or scroll out of view).
 
 ## Talking to a running session, and ending one (`send` / `self-close`)
 
+- **Refer to sessions by their chat title, not the tmux name.** `send` and `kill` accept a session by
+  the Claude Code **chat title** — the `cc—` tmux prefix is an internal detail you can drop. Give the
+  full title (`dev-serv-in/fleetos-devops`), a **bare tail** (`fleetos-devops` → the segment after
+  `device/`, matched whole, so `fleetos` hits `…/fleetos` not `…/fleetos-devops`), or the raw tmux
+  name. Ambiguous input errors out (it never guesses) — so use whichever form you'd say out loud.
 - **`send [--raw] <session> <text…>`** drives a session that's **already up** — it types the text into
   that session's pane and submits it. (`spawn --prompt` seeds a *brand-new* chat; `send` is for a live
   one.) If the target is mid-generation the message simply queues.

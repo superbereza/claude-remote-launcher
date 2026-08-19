@@ -1,6 +1,6 @@
 {
   "name": "claude-remote",
   "description": "Launch Claude Code Remote Control sessions in a detached tmux pane and get the claude.ai/code URL.",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "contextFileName": "AGENTS.md"
 }
