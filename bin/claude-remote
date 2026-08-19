@@ -51,9 +51,13 @@ Usage:
   claude-remote spawn <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]
                                               Same as above, explicit
   claude-remote ls                            List running cc— tmux sessions
+  claude-remote send <session> <text…>        Send a message into an EXISTING session and submit it
   claude-remote kill <session>                Kill one tmux session
   claude-remote kill --all                    Kill all cc— tmux sessions
+  claude-remote self-close                    From INSIDE a session: deregister from claude-keep (if
+                                              tracked), then kill this session's tmux
   claude-remote refresh <session>             Re-issue /remote-control for a fresh URL
+  claude-remote help                          Show this help
 
 Args:
   <path>   Project folder (created if it doesn't exist).
@@ -480,15 +484,64 @@ cmd_kill() {
 }
 
 # ---------------------------------------------------------------------------
+# send — inject text into an EXISTING session's pane and submit it. The "talk to a
+# session that's already running" gap: spawn seeds a NEW chat (--prompt), this drives
+# an existing one. Sent literally (-l; -- guards a leading dash). If the target is
+# mid-generation the message simply queues (Claude handles the queue) — we note, not block.
+# ---------------------------------------------------------------------------
+cmd_send() {
+    local name="${1:-}"; shift || true
+    local text="$*"
+    [[ -n "$name" ]] || die "send: usage: claude-remote send <session> <text…>"
+    [[ -n "$text" ]] || die "send: nothing to send (give the message after the session name)"
+    command -v tmux >/dev/null || die "tmux not found"
+    # Resolve to a pane id — em-dash/slash session names don't match reliably via -t "=name".
+    local pane
+    pane=$(tmux list-panes -a -F "#{session_name}"$'\t'"#{pane_id}" 2>/dev/null \
+             | awk -F'\t' -v s="$name" '$1==s{print $2; exit}')
+    [[ -n "$pane" ]] || die "send: no such session: $name"
+    if tmux capture-pane -p -J -t "$pane" -S -3 2>/dev/null | grep -q 'esc to interrupt'; then
+        echo "note: '$name' is busy — the message will queue until it's idle" >&2
+    fi
+    tmux send-keys -t "$pane" -l -- "$text"
+    sleep 0.4
+    tmux send-keys -t "$pane" Enter
+    echo "sent to $name (${#text} chars)"
+}
+
+# ---------------------------------------------------------------------------
+# self-close — a running session ends ITSELF: first deregister from the keeper's
+# registry, then drop its own tmux session. Registry and session lifecycle live in TWO
+# SEPARATE skills, so we keep them decoupled: this (a session-lifecycle op) belongs to
+# claude-remote, and it DELEGATES the registry cleanup to claude-keep's own self-aware
+# `rm` (only if that skill is installed — no hard dependency, no duplicated registry logic).
+# Order matters: unregister BEFORE we die, so a self-heal timer doesn't relaunch us.
+# ---------------------------------------------------------------------------
+cmd_self_close() {
+    command -v tmux >/dev/null || die "self-close: tmux not found"
+    local self
+    self=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+    [[ -n "$self" ]] || die "self-close: not inside a tmux session (run this from within the session)"
+    if command -v claude-keep >/dev/null 2>&1; then
+        claude-keep rm >/dev/null 2>&1 && echo "deregistered from claude-keep: $self" \
+            || echo "note: not tracked by claude-keep (nothing to deregister)"
+    fi
+    echo "self-close: killing tmux session '$self' …"
+    tmux kill-session -t "=$self"     # ends this process; nothing runs after this
+}
+
+# ---------------------------------------------------------------------------
 # dispatch
 # ---------------------------------------------------------------------------
 case "${1:-}" in
-    -h|--help) usage ;;
+    -h|--help|help) usage ;;
     -V|--version) cmd_version ;;
     "")        usage; exit 2 ;;
     ls)        cmd_list ;;
     kill)      shift; cmd_kill "$@" ;;
     spawn)     shift; cmd_spawn "$@" ;;
     refresh)   shift; cmd_refresh "$@" ;;
+    send)      shift; cmd_send "$@" ;;
+    self-close) cmd_self_close ;;
     *)         cmd_spawn "$@" ;;
 esac

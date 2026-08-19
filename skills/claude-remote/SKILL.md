@@ -21,8 +21,10 @@ Use `claude-remote` to spin up a fresh Claude Code session in any folder. The re
 | `claude-remote <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]` | Spawn a session (default action; equivalent to `spawn`) |
 | `claude-remote spawn <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]` | Same as above, explicit |
 | `claude-remote ls` | List running `cc—` tmux sessions with their cwd |
+| `claude-remote send <session> <text…>` | Send a message into an **existing** session's pane and submit it (the "talk to a session that's already running" op — `spawn --prompt` seeds a *new* chat, this drives a live one). Sent literally; if the target is mid-generation the message just queues. |
 | `claude-remote kill <session>` | Kill one tmux session |
 | `claude-remote kill --all` | Kill all `cc—` tmux sessions |
+| `claude-remote self-close` | Run **from inside** a session to end itself: deregister from `claude-keep` (if that skill is installed and the session is tracked), then kill its own tmux session. See note below. |
 | `claude-remote refresh <session>` | Re-issue `/remote-control` to get a fresh URL after token rotation kills the old one |
 
 ## Quick Examples
@@ -117,6 +119,21 @@ URL (which can appear late or scroll out of view).
 7. Sends `/remote-control <name>` slash command to enable Remote Control (name defaults to the folder).
 8. Confirms Remote Control came up — from **two** signals, whichever fires first: the `Remote Control active` status bar in the pane, **or** a `bridgeSessionId` in Claude's per-process state file `~/.claude/sessions/<pid>.json` (authoritative — matched to this session by cwd, else by the pane's process tree). This makes startup detection robust to a lagging/reworded status bar.
 9. With `--prompt <text>`, types the starting prompt into the pane and submits it. Prints the status (or the URL with `--url`). Tmux session keeps running.
+
+## Talking to a running session, and ending one (`send` / `self-close`)
+
+- **`send <session> <text…>`** drives a session that's **already up** — it types the text into that
+  session's pane and submits it. (`spawn --prompt` seeds a *brand-new* chat; `send` is for a live one.)
+  If the target is mid-generation the message simply queues.
+- **`self-close`** lets a session end **itself** — run it from inside the session. It does two things,
+  and they belong to **two different skills**, so it keeps them decoupled:
+  1. **Deregister from the registry** — that's `claude-session-keeper`'s job, so `self-close`
+     *delegates* to **`claude-keep rm`** (which is self-aware: no arg → removes the calling session).
+     It's called only if `claude-keep` is on PATH (best-effort; no hard dependency, and `claude-remote`
+     never touches the registry file itself).
+  2. **Drop the tmux session** — that's `claude-remote`'s own job (`tmux kill-session`).
+  Order matters: unregister **before** dying, so a self-heal timer doesn't just relaunch it. If the
+  keeper skill isn't installed, `self-close` still works — it just skips step 1 and kills the session.
 
 ## Why slash, not `claude remote-control` server mode
 
