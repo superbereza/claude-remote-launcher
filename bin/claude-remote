@@ -582,7 +582,7 @@ cmd_self_close() {
 # ---------------------------------------------------------------------------
 case "${1:-}" in
     -h|--help|help) usage ;;
-    -V|--version) cmd_version ;;
+    -V|--version|version) cmd_version ;;
     "")        usage; exit 2 ;;
     ls)        cmd_list ;;
     kill)      shift; cmd_kill "$@" ;;
@@ -590,5 +590,17 @@ case "${1:-}" in
     refresh)   shift; cmd_refresh "$@" ;;
     send)      shift; cmd_send "$@" ;;
     self-close) cmd_self_close ;;
-    *)         cmd_spawn "$@" ;;
+    *)
+        # Default action is "spawn <path>". But a mistyped subcommand or a stray flag used to fall
+        # through here and SILENTLY spawn a junk session + mkdir the "path" — this is exactly how a
+        # batch of cc—list / cc—sessions / cc——all / cc—version sessions got created (agents trying to
+        # LIST sessions with the wrong verb). So only auto-spawn when the arg actually looks like a
+        # PATH; a bare word or a flag errors with a hint (use `spawn` to force a bare-named folder).
+        if [[ "$1" == /* || "$1" == .* || "$1" == "~"* || "$1" == */* || -e "$1" ]]; then
+            cmd_spawn "$@"
+        else
+            die "unknown command '$1'. Subcommands: spawn · ls · send · kill · refresh · self-close · help.
+   To spawn a session in a folder, pass a path (e.g. claude-remote ~/dev/$1), or be explicit: claude-remote spawn $1"
+        fi
+        ;;
 esac
