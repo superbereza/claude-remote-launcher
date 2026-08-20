@@ -18,8 +18,7 @@ Use `claude-remote` to spin up a fresh Claude Code session in any folder. The re
 
 | Command | Action |
 |---------|--------|
-| `claude-remote <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]` | Spawn a session (default action; equivalent to `spawn`) |
-| `claude-remote spawn <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]` | Same as above, explicit |
+| `claude-remote spawn <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]` | Spawn a session in `<path>`. **Spawning is explicit** — the `spawn` verb is required (there's no bare `claude-remote <path>` shortcut, which used to turn a mistyped subcommand into a junk session). |
 | `claude-remote ls` | List running `cc—` tmux sessions with their cwd |
 | `claude-remote send [--raw] <session> <text…>` | Send a message into an **existing** session's pane and submit it (the "talk to a session that's already running" op — `spawn --prompt` seeds a *new* chat, this drives a live one). Prefixes a **`[from <this session> — to reply: claude-remote send '<this session>' "…"]`** header so the receiver knows who's asking and how to answer back; `--raw` sends verbatim (no header). If the target is mid-generation the message just queues. |
 | `claude-remote kill <session>` | Kill one tmux session |
@@ -31,19 +30,19 @@ Use `claude-remote` to spin up a fresh Claude Code session in any folder. The re
 
 ```bash
 # Launch in an existing project — chat title defaults to the folder name ("myproject")
-claude-remote ~/dev/myproject
+claude-remote spawn ~/dev/myproject
 
 # Launch in a NEW folder (created and pre-trusted automatically)
-claude-remote ~/dev/scratch-experiment
+claude-remote spawn ~/dev/scratch-experiment
 
 # Custom session name (becomes the remote-control chat title, verbatim)
-claude-remote ~/dev/myproject debug-auth
+claude-remote spawn ~/dev/myproject debug-auth
 
 # Full custom title, including a "device/" prefix if you use that convention
-claude-remote ~/dev/ai-auth-lib "mac-mini/ai-auth-lib"
+claude-remote spawn ~/dev/ai-auth-lib "mac-mini/ai-auth-lib"
 
 # Also print the claude.ai/code URL
-claude-remote ~/dev/myproject --url
+claude-remote spawn ~/dev/myproject --url
 
 # List, kill one, kill all
 claude-remote ls
@@ -56,7 +55,7 @@ claude-remote kill --all
 | Arg | Description |
 |-----|-------------|
 | `<path>` | Folder to run Claude in. Created with `mkdir -p` if missing. |
-| `[name]` | Session name = remote-control **chat title**, used verbatim. Default: the folder name. Nothing is prepended automatically — if you use a `device/` prefix convention (e.g. `mac-mini/`), pass the full title yourself: `claude-remote ~/dev/ai-auth-lib "mac-mini/ai-auth-lib"`. **Collisions:** if a session with the exact same name is already running, the new one is numbered (`name-2`, `name-3`, …) on **both** the tmux session and the chat title, so the two are distinguishable. A name that is merely a *prefix* of an existing session (e.g. `dev` vs a running `dev-helper`) is **not** a collision and is created as-is. |
+| `[name]` | Session name = remote-control **chat title**, used verbatim. Default: the folder name. Nothing is prepended automatically — if you use a `device/` prefix convention (e.g. `mac-mini/`), pass the full title yourself: `claude-remote spawn ~/dev/ai-auth-lib "mac-mini/ai-auth-lib"`. **Collisions:** if a session with the exact same name is already running, the new one is numbered (`name-2`, `name-3`, …) on **both** the tmux session and the chat title, so the two are distinguishable. A name that is merely a *prefix* of an existing session (e.g. `dev` vs a running `dev-helper`) is **not** a collision and is created as-is. |
 
 ## Flags
 
@@ -74,7 +73,7 @@ claude-remote kill --all
 silently inherit a default. Ask (or confirm) and pass `--model <alias>` / `--effort <level>`:
 
 ```bash
-claude-remote ~/dev/trendwatcher "dev-serv-in/trendwatcher" --model opus --effort max
+claude-remote spawn ~/dev/trendwatcher "dev-serv-in/trendwatcher" --model opus --effort max
 ```
 
 Why this matters:
@@ -190,7 +189,7 @@ To spawn a session on a remote server:
 3. From your local machine, invoke through SSH:
 
 ```bash
-ssh <alias> "bash -lc 'claude-remote <path> [name] [--url]'"
+ssh <alias> "bash -lc 'claude-remote spawn <path> [name] [--url]'"
 ```
 
 `bash -lc` is important so that `~/.local/bin` (where `scripts/install.sh` puts the

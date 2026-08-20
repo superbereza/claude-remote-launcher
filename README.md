@@ -40,19 +40,19 @@ The same `skills/` directory is exposed to **Cursor** (`.cursor-plugin/`), **Cod
 
 ```bash
 # Existing folder — chat title defaults to the folder name
-claude-remote ~/dev/myproject
+claude-remote spawn ~/dev/myproject
 
 # New folder (auto-created and pre-trusted)
-claude-remote ~/dev/scratch-experiment
+claude-remote spawn ~/dev/scratch-experiment
 
 # Custom session name (= the remote-control chat title, used verbatim)
-claude-remote ~/dev/myproject debug-auth
+claude-remote spawn ~/dev/myproject debug-auth
 
 # Also print the claude.ai/code URL
-claude-remote ~/dev/myproject --url
+claude-remote spawn ~/dev/myproject --url
 
 # Seed the new chat with a starting task (typed in + submitted once it's up)
-claude-remote ~/dev/myproject --prompt "scaffold a FastAPI service with a health check"
+claude-remote spawn ~/dev/myproject --prompt "scaffold a FastAPI service with a health check"
 
 # Send a message into a session that's ALREADY running
 claude-remote send 'cc—myproject' "run the tests and summarize failures"
@@ -71,8 +71,7 @@ With `--url` the `STATUS` line becomes `URL: https://claude.ai/code/...`. The su
 
 | Command | Action |
 |---------|--------|
-| `claude-remote <path> [name] [--url] [--prompt <text>]` | Spawn (default; same as `spawn`) |
-| `claude-remote spawn <path> [name] [--url] [--prompt <text>]` | Spawn, explicit |
+| `claude-remote spawn <path> [name] [--url] [--prompt <text>]` | Spawn a session in `<path>`. **The `spawn` verb is required** — no bare `claude-remote <path>` shortcut (it used to turn a typo'd subcommand into a junk session). |
 | `claude-remote ls` | List running `cc—` tmux sessions |
 | `claude-remote send [--raw] <session> <text…>` | Send a message into an **existing** session and submit it (drive a live chat; `--prompt` seeds a *new* one). Prefixes a `[from <you> — to reply: …]` header so the receiver can answer back; `--raw` omits it |
 | `claude-remote kill <session>` | Kill one |
@@ -83,7 +82,7 @@ With `--url` the `STATUS` line becomes `URL: https://claude.ai/code/...`. The su
 
 The session `name` is the remote-control chat title, **used verbatim** — nothing is
 prepended automatically, so include a `device/` prefix yourself if you use that
-convention (e.g. `claude-remote ~/dev/x "mac-mini/x"`).
+convention (e.g. `claude-remote spawn ~/dev/x "mac-mini/x"`).
 
 Disconnecting from claude.ai/code only drops the remote view; the local `claude` process keeps running until you kill the tmux session. The trust entry written to `~/.claude.json` is left in place after killing sessions, so re-launching in the same folder is fast.
 

@@ -46,10 +46,10 @@ resolve_claude() {
 usage() {
     cat <<EOF
 Usage:
-  claude-remote <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]
-                                              Spawn a session (default action)
-  claude-remote spawn <path> [name] [--url] [--prompt <text>] [--resume <uuid>] [--model <m>] [--effort <e>]
-                                              Same as above, explicit
+  claude-remote spawn PATH [name] [--url] [--prompt TEXT] [--resume UUID] [--model M] [--effort E]
+                                              Spawn a Claude Code session (chat) in PATH. Spawning is
+                                              EXPLICIT — there is no bare "claude-remote PATH" shortcut
+                                              (that silently turned typos into junk sessions).
   claude-remote ls                            List running cc— tmux sessions
   claude-remote send [--raw] <session> <text…>  Send a message into an EXISTING session and submit it.
                                               Prefixes a "from <this session> — reply: …" header so the
@@ -66,7 +66,7 @@ Args:
   [name]   Session name = remote-control chat title. Default: the folder name.
            Pass it in full (e.g. "mac-mini/ai-auth-lib") for a "device/" prefix —
            nothing is prepended automatically.
-  <session>  (for send/kill) Refer to a session by its Claude Code chat title — the `cc—`
+  <session>  (for send/kill) Refer to a session by its Claude Code chat title — the "cc—"
            tmux prefix is optional. Accepts the full title ("dev-serv-in/fleetos-devops"),
            a bare tail ("fleetos-devops"), or the raw tmux name. Ambiguous → error (no guessing).
 
@@ -590,17 +590,10 @@ case "${1:-}" in
     refresh)   shift; cmd_refresh "$@" ;;
     send)      shift; cmd_send "$@" ;;
     self-close) cmd_self_close ;;
-    *)
-        # Default action is "spawn <path>". But a mistyped subcommand or a stray flag used to fall
-        # through here and SILENTLY spawn a junk session + mkdir the "path" — this is exactly how a
-        # batch of cc—list / cc—sessions / cc——all / cc—version sessions got created (agents trying to
-        # LIST sessions with the wrong verb). So only auto-spawn when the arg actually looks like a
-        # PATH; a bare word or a flag errors with a hint (use `spawn` to force a bare-named folder).
-        if [[ "$1" == /* || "$1" == .* || "$1" == "~"* || "$1" == */* || -e "$1" ]]; then
-            cmd_spawn "$@"
-        else
-            die "unknown command '$1'. Subcommands: spawn · ls · send · kill · refresh · self-close · help.
-   To spawn a session in a folder, pass a path (e.g. claude-remote ~/dev/$1), or be explicit: claude-remote spawn $1"
-        fi
-        ;;
+    # Spawning is EXPLICIT — `claude-remote spawn <path> [name]`, nothing else. There is no
+    # implicit "bare arg = spawn this" default: that silently turned mistyped subcommands into junk
+    # sessions (a whole batch of cc—list / cc—sessions / cc——all appeared when agents tried to LIST
+    # with the wrong verb). An unknown command now errors with a hint — it can never spawn.
+    *)         die "unknown command '$1'. To spawn a session: claude-remote spawn <path> [name].
+   Subcommands: spawn · ls · send · kill · refresh · self-close · version · help" ;;
 esac

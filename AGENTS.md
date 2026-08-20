@@ -20,9 +20,9 @@ Call `claude-remote` directly. It's a self-contained bash script — no build/ve
 ## Cheat sheet
 
 ```bash
-claude-remote <path> [name]          # spawn a session; name defaults to the folder
-claude-remote <path> [name] --url    # also print the claude.ai/code URL
-claude-remote <path> [name] --prompt "fix the failing tests"   # seed the new chat with a starting task
+claude-remote spawn <path> [name]          # spawn a session; name defaults to the folder
+claude-remote spawn <path> [name] --url    # also print the claude.ai/code URL
+claude-remote spawn <path> [name] --prompt "fix the failing tests"   # seed the new chat with a starting task
 claude-remote ls                     # list running cc— tmux sessions
 claude-remote send [--raw] <session> <text…> # message an EXISTING session (prefixes a from/reply header; --raw omits)
 claude-remote kill <session>         # kill one session
