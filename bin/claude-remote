@@ -151,6 +151,62 @@ sys.exit(1)
 PY
 }
 
+# _claude_pids_in <tmux_name> — print the PIDs of `claude` processes running inside a session's
+# pane process trees. Capture these BEFORE `tmux kill-session`: claude detaches / ignores SIGHUP,
+# so it SURVIVES the tmux kill and orphans onto init — a bare kill-session frees the pane but not
+# the process, whose RAM/swap then stay pinned. Best-effort; empty if python3/tmux unavailable.
+_claude_pids_in() {
+    local tmux_name="$1"
+    command -v python3 >/dev/null || return 0
+    python3 - "$tmux_name" <<'PY'
+import os, subprocess, sys
+name = sys.argv[1]
+try:
+    roots = [int(x) for x in subprocess.run(
+        ["tmux", "list-panes", "-t", name, "-F", "#{pane_pid}"],
+        capture_output=True, text=True).stdout.split()]
+except Exception:
+    roots = []
+if not roots:
+    sys.exit(0)
+children = {}
+for s in os.listdir('/proc'):
+    if not s.isdigit(): continue
+    try:
+        txt = open(f"/proc/{s}/stat").read()
+        children.setdefault(int(txt.rsplit(") ", 1)[1].split()[1]), []).append(int(s))
+    except Exception:
+        continue
+tree, stack = set(), list(roots)
+while stack:
+    p = stack.pop()
+    if p in tree: continue
+    tree.add(p); stack += children.get(p, [])
+for p in sorted(tree):
+    try:
+        if open(f"/proc/{p}/comm").read().strip() == "claude":
+            print(p)
+    except Exception:
+        pass
+PY
+}
+
+# _kill_claude_pids <pid…> — SIGTERM for a clean shutdown, escalating to SIGKILL if any linger.
+# Pairs with _claude_pids_in to make kill/self-close actually reclaim memory, not just drop tmux.
+_kill_claude_pids() {
+    local pid i alive
+    for pid in "$@"; do
+        [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && kill -TERM "$pid" 2>/dev/null
+    done
+    for i in 1 2 3 4 5 6; do
+        alive=0
+        for pid in "$@"; do kill -0 "$pid" 2>/dev/null && alive=1; done
+        (( alive )) || return 0
+        sleep 0.4
+    done
+    for pid in "$@"; do kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null; done
+}
+
 # ---------------------------------------------------------------------------
 # spawn
 # ---------------------------------------------------------------------------
@@ -471,14 +527,19 @@ cmd_kill() {
                 echo "(no cc— sessions to kill)"
                 return
             fi
+            local pids
             while IFS= read -r n; do
+                pids=$(_claude_pids_in "$n")                 # capture BEFORE the tmux kill
                 tmux kill-session -t "$n" && echo "killed: $n"
+                [[ -n "$pids" ]] && _kill_claude_pids $pids  # claude survives tmux kill — finish it off
             done <<< "$names"
             ;;
         *)
-            local name
+            local name pids
             name=$(_resolve_session "$1") || exit 1   # accept chat title / bare name / full tmux name
+            pids=$(_claude_pids_in "$name")           # capture BEFORE the tmux kill
             tmux kill-session -t "=$name" && echo "killed: ${name#cc—}"
+            [[ -n "$pids" ]] && _kill_claude_pids $pids   # claude detaches from tmux — kill it directly
             ;;
     esac
 }
@@ -574,7 +635,9 @@ cmd_self_close() {
             || echo "note: not tracked by claude-keep (nothing to deregister)"
     fi
     echo "self-close: killing tmux session '$self' …"
-    tmux kill-session -t "=$self"     # ends this process; nothing runs after this
+    local pids; pids=$(_claude_pids_in "$self")   # capture our own claude pid BEFORE dropping tmux
+    tmux kill-session -t "=$self"                 # drops the pane; claude may survive it (orphan)
+    [[ -n "$pids" ]] && _kill_claude_pids $pids   # …so kill the process too, or it leaks after we "close"
 }
 
 # ---------------------------------------------------------------------------
