@@ -350,6 +350,13 @@ PYEOF
     # Build the claude launch command. With --resume <uuid>, claude reopens that
     # specific session in this pane instead of starting a fresh conversation.
     local claude_cmd="$CLAUDE_BIN --dangerously-skip-permissions"
+    # Enable Remote Control AT LAUNCH with our chat title, via the --remote-control <name>
+    # flag. This replaces the old post-launch `/remote-control <name>` slash: newer claude
+    # AUTO-attaches RC on startup with a derived name (e.g. "fleetos-30") BEFORE the slash
+    # could run, and a slash on an already-active RC only opens the management dialog — it
+    # ignores the name, so the chat kept the wrong title and the seed prompt got eaten in
+    # the race. Naming RC at launch sidesteps all of that (title lands, composer stays clear).
+    claude_cmd+=" --remote-control $(printf %q "$claude_name")"
     if [[ -n "$resume_uuid" ]]; then
         claude_cmd+=" --resume $resume_uuid"
     fi
@@ -360,7 +367,7 @@ PYEOF
         claude_cmd+=" --effort $effort"
     fi
 
-    # Start interactive Claude; we'll enable Remote Control via slash.
+    # Start interactive Claude with Remote Control already enabled + named.
     tmux send-keys -t "$tmux_name" "$claude_cmd" Enter
 
     # Wait for the TUI to reach ready state (bottom bar shows "bypass permissions on").
@@ -383,10 +390,9 @@ PYEOF
         exit 1
     fi
 
-    # Enable Remote Control via slash (carries chat history; cleanly recoverable).
-    # No quotes around the name — slash command takes the rest of the line as the title verbatim,
-    # so quotes would end up in the displayed name.
-    tmux send-keys -t "$tmux_name" "/remote-control ${claude_name}" Enter
+    # Remote Control is already enabled + named via the launch flag above — no post-launch
+    # slash needed (and issuing one would only pop the RC management dialog on the now-active
+    # session). We just poll below to CONFIRM it came up.
 
     local url="" rc_active=0 confirmed_rc=0 iters
     iters=$(awk -v t="$URL_TIMEOUT_S" -v s="$POLL_INTERVAL_S" 'BEGIN{print int(t/s)}')
@@ -405,7 +411,7 @@ PYEOF
         # bar — NOT the URL. The URL is only needed for --url, and it can appear
         # late or scroll out of the captured window, which used to cause a false
         # "not detected" + exit 1 even though RC was up.
-        printf '%s' "$pane" | grep -q 'Remote Control active' && rc_active=1
+        printf '%s' "$pane" | grep -qiE 'Remote Control active|remote-control is active' && rc_active=1
         # Corroborating AUTHORITATIVE signal — Remote Control registered in the state file
         # (bridgeSessionId). OR'd with the TUI scrape above: whichever confirms first wins, so a
         # lagging/reworded status bar no longer false-fails a session that's actually up. Only

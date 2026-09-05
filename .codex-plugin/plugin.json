@@ -1,6 +1,6 @@
 {
   "name": "claude-remote",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Launch Claude Code Remote Control sessions in a detached tmux pane and get the claude.ai/code URL.",
   "author": {
     "name": "superbereza",

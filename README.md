@@ -92,9 +92,9 @@ Disconnecting from claude.ai/code only drops the remote view; the local `claude`
 2. Creates the folder with `mkdir -p` if missing.
 3. **Pre-trusts the folder** by atomically writing `hasTrustDialogAccepted: true` into `~/.claude.json` under the project entry.
 4. Starts a detached tmux session in the folder.
-5. Runs `claude --dangerously-skip-permissions` inside the pane (interactive TUI).
+5. Runs `claude --remote-control "<name>" --dangerously-skip-permissions` inside the pane — Remote Control is enabled **and named at launch** via the flag (name defaults to the folder). This replaced a post-launch `/remote-control <name>` slash: newer Claude auto-attaches RC on startup with a *derived* name before the slash could run, and a slash on an already-active RC only opens the management dialog (ignoring the name) — so the chat kept the wrong title and any seed prompt was lost in the race.
 6. Waits for `bypass permissions on` (bottom-bar indicator) — the TUI is ready. Trust dialog is skipped thanks to step 3.
-7. Sends `/remote-control <name>` slash command to enable Remote Control (name defaults to the folder).
+7. Confirms Remote Control came up (status bar **or** a `bridgeSessionId` in the state file).
 8. Polls `tmux capture-pane` (with `-J` to join wrapped lines) for `https://claude.ai/code/...` (timeout 30 s) to confirm it came up.
 9. Prints the status (or the URL with `--url`). Tmux session keeps running after the script exits.
 
