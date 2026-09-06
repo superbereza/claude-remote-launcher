@@ -1,6 +1,6 @@
 ---
 name: claude-remote
-description: Create a NEW Claude Code chat/session in any project folder (existing or brand-new) without leaving the current one — use for "create another chat with Claude", "spin up / start a new session", "open a new chat in <folder>", hand a task off to a fresh session, seed a new project, or run a parallel session in another repo. The new chat opens automatically as a Remote Control conversation on the user's device (phone / claude.ai/code), drivable from anywhere; pass --url to also print the link, or --prompt "<text>" to seed the new chat with a starting task. Runs in a detached tmux pane.
+description: Manage Claude Code Remote Control sessions in detached tmux panes. PRIMARY use — create a NEW chat/session in any project folder (existing or brand-new) without leaving the current one: "create another chat with Claude", "spin up / start a new session", "open a new chat in <folder>", hand a task off to a fresh session, seed a new project, run a parallel session in another repo (--prompt "<text>" seeds a starting task; --url also prints the claude.ai/code link). ALSO use to DRIVE or CLOSE running sessions — send a message into a live session ("message / tell the <X> session", "reply to that session"), and END a session. In particular, when a session is asked to close or end ITSELF — "close this session", "end / shut down this chat", "self-close", "закрой / заверши эту сессию", "заверши сам себя" — run `claude-remote self-close` from inside it (deregisters from claude-keep, then kills its own tmux AND its claude process). Do NOT use the app-level "end chat" for this: that ends the conversation view but leaves the claude process and tmux running (a stuck half-closed session). New chats open automatically as a Remote Control conversation on the user's device (phone / claude.ai/code).
 ---
 
 # claude-remote
@@ -134,15 +134,21 @@ URL (which can appear late or scroll out of view).
     is and exactly **how to answer back** — turning `send` into a two-way, session-to-session channel.
     The sender is this command's own tmux session (`$TMUX`). Pass **`--raw`** to omit the header (for
     injecting a plain command/prompt, not a session-to-session message).
-- **`self-close`** lets a session end **itself** — run it from inside the session. It does two things,
-  and they belong to **two different skills**, so it keeps them decoupled:
+- **`self-close`** lets a session end **itself** — run it from inside the session. **This is the
+  correct way for a session to close on request** ("close this session", "заверши себя"). Do **not**
+  reach for the app-level "end chat" instead: that ends the conversation *view* but leaves the claude
+  process (hundreds of MB) and the tmux session running — a stuck, half-closed session someone has to
+  clean up by hand. `self-close` does three things:
   1. **Deregister from the registry** — that's `claude-session-keeper`'s job, so `self-close`
      *delegates* to **`claude-keep rm`** (which is self-aware: no arg → removes the calling session).
      It's called only if `claude-keep` is on PATH (best-effort; no hard dependency, and `claude-remote`
      never touches the registry file itself).
-  2. **Drop the tmux session** — that's `claude-remote`'s own job (`tmux kill-session`).
+  2. **Drop the tmux session** — `claude-remote`'s own job (`tmux kill-session`).
+  3. **Kill the claude process** — because claude detaches / ignores SIGHUP and would otherwise survive
+     the tmux kill orphaned, pinning its RAM/swap. `self-close` captures the pane's claude PID and
+     SIGTERM→SIGKILLs it, so "closed" actually frees the memory.
   Order matters: unregister **before** dying, so a self-heal timer doesn't just relaunch it. If the
-  keeper skill isn't installed, `self-close` still works — it just skips step 1 and kills the session.
+  keeper skill isn't installed, `self-close` still works — it just skips step 1.
 
 ## Why slash, not `claude remote-control` server mode
 
