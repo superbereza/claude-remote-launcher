@@ -1,39 +1,43 @@
 # claude-remote-launcher — agent guide
 
-Spawn, message and close **Claude Code Remote Control** sessions on **tmux** or **herdr**
-(pluggable backend picked from `~/.config/claude-remote/config.toml`, `auto` by default). By default
-`spawn` just confirms the session started (the remote chat appears on the user's device); `--url`
-also prints the `claude.ai/code` link. Second skill: **herdr-migration** (tmux → herdr, nothing lost).
+Spin up a fresh **Claude Code Remote Control** session in any folder, in a detached
+`tmux` pane. By default it just confirms the session started (the remote chat appears
+on the user's device); pass `--url` to also print the `claude.ai/code` link.
 
-The same skills are wired up for several coding agents from one source:
+The same skill is wired up for several coding agents from one source:
 
-- **Claude Code / Cursor / Codex** — [`skills/claude-remote/SKILL.md`](skills/claude-remote/SKILL.md),
-  [`skills/herdr-migration/SKILL.md`](skills/herdr-migration/SKILL.md) (auto-discovered via
-  `.claude-plugin/`, `.cursor-plugin/`, `.codex-plugin/`).
+- **Claude Code / Cursor / Codex** — load the skill at [`skills/claude-remote/SKILL.md`](skills/claude-remote/SKILL.md)
+  (auto-discovered via `.claude-plugin/`, `.cursor-plugin/`, `.codex-plugin/`).
 - **Gemini** — reads this file (`gemini-extension.json` → `contextFileName: AGENTS.md`).
+- Full, authoritative usage: [`skills/claude-remote/SKILL.md`](skills/claude-remote/SKILL.md).
 
-Requires `claude` (v2.1.51+, logged in), `python3`, and `tmux` and/or `herdr`.
+Requires `tmux`, `claude` (v2.1.51+, logged in), and `python3`.
+
+> **Scope:** Claude Code + tmux only. For herdr or non-Claude (Codex, …) sessions and the
+> tmux→herdr migration, use the successor **`agent-sessions`** (repo `superbereza/agent-sessions`).
+> `claude-remote` is kept stable for Claude-in-tmux and the skills that already call it.
+
+## Invoking the CLI
+
+Call `claude-remote` directly. It's a self-contained bash script — no build/venv step.
 
 ## Cheat sheet
 
 ```bash
-claude-remote spawn <path> [name] [--prompt TEXT | --prompt-file F] [--model M] [--effort E] [--url]
-claude-remote ls                              # sessions on every available backend
-claude-remote send [--raw] <session> <text…>  # message a LIVE session (from/reply header; --raw omits)
-claude-remote kill <session> | --all          # close (claude process included)
-claude-remote self-close                      # from INSIDE a session: deregister from claude-keep + close itself
-claude-remote refresh <session>               # re-issue /remote-control for a fresh URL
-claude-remote heal [--dry-run]                # herdr: restore titles/flags after a herdr restart
-claude-remote config show                     # settings: backend, rc_prefix, permission_mode, model, …
-claude-remote --backend tmux|herdr <cmd>      # override the backend for one call
+claude-remote spawn <path> [name]          # spawn a session; name defaults to the folder
+claude-remote spawn <path> [name] --url    # also print the claude.ai/code URL
+claude-remote spawn <path> [name] --prompt "fix the failing tests"   # seed the new chat with a starting task
+claude-remote ls                     # list running cc— tmux sessions
+claude-remote send [--raw] <session> <text…> # message an EXISTING session (prefixes a from/reply header; --raw omits)
+claude-remote kill <session>         # kill one session
+claude-remote kill --all             # kill all cc— sessions
+claude-remote self-close             # from INSIDE a session: deregister from claude-keep (if tracked) + kill own tmux
+claude-remote refresh <session>      # re-issue /remote-control for a fresh URL
 ```
 
-## Layout
-
-`bin/claude-remote` = core (settings, arg parsing, dispatch) → `lib/backend-tmux.sh`,
-`lib/backend-herdr.sh` (+ `lib/herdr_helper.py`) implement one contract (documented at the top of
-`lib/backend-tmux.sh`). `lib/config.py` loads settings. New runtime = new `lib/backend-<name>.sh`.
-
+The session `name` is the remote-control chat title (passed verbatim — include a
+`device/` prefix yourself if you use that convention). Default behaviour prints a
+status, not the URL — read the skill for details.
 ## Maintainer note
 
 Changing a skill or its payload? It reaches installed plugins **only after a release** —

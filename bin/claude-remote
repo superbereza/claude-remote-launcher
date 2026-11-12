@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
-# claude-remote — spawn / list / message / close Claude Code Remote Control sessions.
+# claude-remote — spawn / list / kill Claude Code remote-control sessions.
 #
-# One CLI, several session BACKENDS underneath (lib/backend-<name>.sh):
-#   tmux   — detached tmux sessions named cc—<title>          (the original backend)
-#   herdr  — herdr workspaces + `herdr agent start/prompt`      (https://herdr.dev)
-# Pick one with `backend = …` in the config file, CLAUDE_REMOTE_BACKEND, or --backend.
-# `auto` (default) = herdr when its server is running (or we're inside a herdr pane), else tmux.
-#
-# Settings: ~/.config/claude-remote/config.toml — see `claude-remote config show` / `config init`.
+# Subcommands:
+#   claude-remote <path> [name] [--url]    (implicit spawn)
+#   claude-remote spawn <path> [name] [--url]   (explicit)
+#   claude-remote ls
+#   claude-remote kill <session>
+#   claude-remote kill --all
 
 set -euo pipefail
 
-EM=$'—'  # em-dash separator: cc—foo
+EM=$'—'  # em-dash separator: cc—foo—task
 URL_TIMEOUT_S=45
 POLL_INTERVAL_S=0.5
 
-# Resolve this script's repo root (portable, follows symlinks) to find VERSION and lib/.
+# Resolve this script's repo root (portable, follows symlinks) to find VERSION.
 _src="${BASH_SOURCE[0]}"
 while [ -L "$_src" ]; do
     _d=$(cd -P "$(dirname "$_src")" && pwd); _src=$(readlink "$_src")
@@ -23,65 +22,19 @@ while [ -L "$_src" ]; do
 done
 SCRIPT_ROOT=$(cd -P "$(dirname "$_src")/.." && pwd)
 
-die() { echo "claude-remote: $*" >&2; exit 1; }
-
 cmd_version() {
     local v="unknown"
     [[ -f "$SCRIPT_ROOT/VERSION" ]] && v=$(cat "$SCRIPT_ROOT/VERSION")
     echo "claude-remote $v"
 }
 
-# ---------------------------------------------------------------------------
-# config — built-in default < config file < CLAUDE_REMOTE_<KEY> env < command-line flag
-# ---------------------------------------------------------------------------
-CONFIG_FILE="${CLAUDE_REMOTE_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-remote/config.toml}"
-CONFIG_KEYS=(backend rc_prefix permission_mode model effort claude_bin herdr_bin message_header)
-
-load_config() {
-    command -v python3 >/dev/null || die "python3 not found"
-    eval "$(python3 "$SCRIPT_ROOT/lib/config.py" load "$CONFIG_FILE")"
-}
-
-cmd_config() {
-    case "${1:-show}" in
-        show)
-            echo "# config file: $CONFIG_FILE $([[ -f "$CONFIG_FILE" ]] && echo '(present)' || echo '(absent — built-in defaults)')"
-            local k v s
-            for k in "${CONFIG_KEYS[@]}"; do
-                v="CFG_$k"; s="SRC_$k"
-                printf '%-16s = %-40s # %s\n' "$k" "\"${!v}\"" "${!s}"
-            done
-            echo "# effective backend: $(pick_backend)"
-            ;;
-        path) echo "$CONFIG_FILE" ;;
-        init)
-            local force=0; [[ "${2:-}" == "--force" ]] && force=1
-            if [[ -f "$CONFIG_FILE" ]] && (( !force )); then
-                die "config exists: $CONFIG_FILE (use 'config init --force' to overwrite)"
-            fi
-            mkdir -p "$(dirname "$CONFIG_FILE")"
-            cp "$SCRIPT_ROOT/config.example.toml" "$CONFIG_FILE"
-            echo "wrote $CONFIG_FILE — edit it, then check with: claude-remote config show"
-            ;;
-        edit) "${EDITOR:-vi}" "$CONFIG_FILE" ;;
-        *) die "config: usage: claude-remote config [show|path|init [--force]|edit]" ;;
-    esac
-}
-
-# ---------------------------------------------------------------------------
-# shared helpers (used by every backend)
-# ---------------------------------------------------------------------------
-
-# Resolve the claude binary to an ABSOLUTE path (config claude_bin wins). On some setups the
-# npm-global bin dir is NOT on a non-interactive PATH, so a bare `command -v claude` fails even
-# though claude is installed.
+# Resolve the claude binary to an ABSOLUTE path. Prefer PATH, but fall back to known
+# install locations: on some setups (e.g. a server where claude lives in ~/.npm-global)
+# the npm-global bin dir is NOT on a non-interactive PATH, so a bare `command -v claude`
+# fails even though claude is installed and runnable. Using the resolved absolute path
+# for the in-tmux launch too makes the spawn independent of the pane's PATH.
 resolve_claude() {
     local c
-    if [[ -n "$CFG_claude_bin" ]]; then
-        c="${CFG_claude_bin/#\~/$HOME}"
-        [[ -x "$c" ]] && { printf '%s\n' "$c"; return 0; }
-        return 1
-    fi
     c=$(command -v claude 2>/dev/null) && { printf '%s\n' "$c"; return 0; }
     for c in "$HOME/.npm-global/bin/claude" "$HOME/.local/bin/claude" \
              "$HOME/.claude/local/claude" /usr/local/bin/claude; do
@@ -90,125 +43,156 @@ resolve_claude() {
     return 1
 }
 
-resolve_herdr() {
-    local c
-    if [[ -n "$CFG_herdr_bin" ]]; then
-        c="${CFG_herdr_bin/#\~/$HOME}"; [[ -x "$c" ]] && { printf '%s\n' "$c"; return 0; }
-        return 1
-    fi
-    c=$(command -v herdr 2>/dev/null) && { printf '%s\n' "$c"; return 0; }
-    for c in "$HOME/.local/bin/herdr" /usr/local/bin/herdr /opt/homebrew/bin/herdr; do
-        [[ -x "$c" ]] && { printf '%s\n' "$c"; return 0; }
-    done
-    return 1
+usage() {
+    cat <<EOF
+Usage:
+  claude-remote spawn PATH [name] [--url] [--prompt TEXT] [--resume UUID] [--model M] [--effort E]
+                                              Spawn a Claude Code session (chat) in PATH. Spawning is
+                                              EXPLICIT — there is no bare "claude-remote PATH" shortcut
+                                              (that silently turned typos into junk sessions).
+  claude-remote ls                            List running cc— tmux sessions
+  claude-remote send [--raw] <session> <text…>  Send a message into an EXISTING session and submit it.
+                                              Prefixes a "from <this session> — reply: …" header so the
+                                              receiver knows who asked and how to answer back; --raw omits it.
+  claude-remote kill <session>                Kill one tmux session
+  claude-remote kill --all                    Kill all cc— tmux sessions
+  claude-remote self-close                    From INSIDE a session: deregister from claude-keep (if
+                                              tracked), then kill this session's tmux
+  claude-remote refresh <session>             Re-issue /remote-control for a fresh URL
+  claude-remote help                          Show this help
+
+Args:
+  <path>   Project folder (created if it doesn't exist).
+  [name]   Session name = remote-control chat title. Default: the folder name.
+           Pass it in full (e.g. "mac-mini/ai-auth-lib") for a "device/" prefix —
+           nothing is prepended automatically.
+  <session>  (for send/kill) Refer to a session by its Claude Code chat title — the "cc—"
+           tmux prefix is optional. Accepts the full title ("dev-serv-in/fleetos-devops"),
+           a bare tail ("fleetos-devops"), or the raw tmux name. Ambiguous → error (no guessing).
+
+Flags:
+  --url, -u           Also print the claude.ai/code URL. Default: status only.
+  --prompt <text>     Seed the new chat: once it's up, type <text> into the pane and
+  -p <text>           submit it — the fresh session starts working on it immediately.
+  --resume <uuid>     Resume an existing session by UUID in the new tmux pane
+  -r <uuid>           (instead of starting a fresh conversation).
+  --model <m>         Launch on a specific model (alias: opus/sonnet/fable, or a
+  -m <m>              full id like claude-opus-4-8). Default: claude's own default.
+  --effort <e>        Launch with an effort level: low|medium|high|xhigh|max.
+  -e <e>              Default: claude's own default.
+
+Spawn output (default):
+  SESSION: <tmux name>
+  STATUS:  remote-control active
+  ATTACH:  tmux attach -t <session>
+
+With --url the STATUS line becomes:
+  URL:     https://claude.ai/code/...
+
+Exit 1 only if Remote Control doesn't activate within ${URL_TIMEOUT_S}s
+  (a missing --url link while RC is active is NOT a failure).
+EOF
 }
 
-# Is a backend usable on this machine right now?
-backend_available() {
-    case "$1" in
-        tmux)  command -v tmux >/dev/null ;;
-        herdr) local h; h=$(resolve_herdr) || return 1
-               [[ "${HERDR_ENV:-}" == 1 ]] && return 0
-               "$h" status server 2>/dev/null | grep -q 'status: running' ;;
-        *)     return 1 ;;
-    esac
+die() { echo "claude-remote: $*" >&2; exit 1; }
+
+# _bridge_up <tmux_name> <abs_cwd> — is Remote Control REGISTERED for this session?
+# Authoritative signal alongside the TUI scrape: Claude writes ~/.claude/sessions/<pid>.json per
+# running process, and it gains a `bridgeSessionId` once Remote Control is up (absence = not yet;
+# presence = up — decisive for confirming STARTUP). Two matchers, in order:
+#   1. via the SESSION — the state file whose cwd is this launch dir (real-path matched, unique).
+#   2. fallback via the PANEL — match by the tmux pane's process tree (disambiguates a shared cwd,
+#      or a cwd that didn't resolve-match).
+# Returns 0 iff a matching state file has a bridgeSessionId. Best-effort: returns 1 (not 0) if
+# python3 / the state file are absent, so the caller still relies on the pane-scrape signal.
+_bridge_up() {
+    local tmux_name="$1" abs_cwd="$2"
+    command -v python3 >/dev/null || return 1
+    python3 - "$tmux_name" "$abs_cwd" <<'PY'
+import glob, json, os, subprocess, sys
+tmux_name, want = sys.argv[1], sys.argv[2]
+rp = os.path.realpath(want)
+states = []
+for f in glob.glob(os.path.expanduser("~/.claude/sessions/*.json")):
+    try: states.append(json.load(open(f)))
+    except Exception: pass
+
+# 1) via the session: unique state file whose cwd is this launch dir
+by_cwd = [d for d in states if d.get("cwd") and os.path.realpath(d["cwd"]) == rp]
+if len(by_cwd) == 1:
+    sys.exit(0 if by_cwd[0].get("bridgeSessionId") else 1)
+
+# 2) fallback via the panel: the tmux pane's process tree
+try:
+    pane_pid = int(subprocess.run(
+        ["tmux", "list-panes", "-t", tmux_name, "-F", "#{pane_pid}"],
+        capture_output=True, text=True).stdout.split()[0])
+except Exception:
+    pane_pid = 0
+if pane_pid:
+    children = {}
+    for s in glob.glob("/proc/[0-9]*/stat"):
+        try:
+            txt = open(s).read()
+            pid = int(os.path.basename(os.path.dirname(s)))
+            ppid = int(txt.rsplit(") ", 1)[1].split()[1])
+        except Exception:
+            continue
+        children.setdefault(ppid, []).append(pid)
+    tree, stack = set(), [pane_pid]
+    while stack:
+        p = stack.pop()
+        if p in tree: continue
+        tree.add(p); stack += children.get(p, [])
+    for d in states:
+        if d.get("pid") in tree:
+            sys.exit(0 if d.get("bridgeSessionId") else 1)
+sys.exit(1)
+PY
 }
 
-pick_backend() {
-    local b="${OPT_backend:-$CFG_backend}"
-    case "$b" in
-        auto|"")
-            if backend_available herdr; then echo herdr
-            elif backend_available tmux; then echo tmux
-            else echo none; fi ;;
-        tmux|herdr) echo "$b" ;;
-        *) die "unknown backend '$b' (supported: auto, tmux, herdr)" ;;
-    esac
+# _claude_pids_in <tmux_name> — print the PIDs of `claude` processes running inside a session's
+# pane process trees. Capture these BEFORE `tmux kill-session`: claude detaches / ignores SIGHUP,
+# so it SURVIVES the tmux kill and orphans onto init — a bare kill-session frees the pane but not
+# the process, whose RAM/swap then stay pinned. Best-effort; empty if python3/tmux unavailable.
+_claude_pids_in() {
+    local tmux_name="$1"
+    command -v python3 >/dev/null || return 0
+    python3 - "$tmux_name" <<'PY'
+import os, subprocess, sys
+name = sys.argv[1]
+try:
+    roots = [int(x) for x in subprocess.run(
+        ["tmux", "list-panes", "-t", name, "-F", "#{pane_pid}"],
+        capture_output=True, text=True).stdout.split()]
+except Exception:
+    roots = []
+if not roots:
+    sys.exit(0)
+children = {}
+for s in os.listdir('/proc'):
+    if not s.isdigit(): continue
+    try:
+        txt = open(f"/proc/{s}/stat").read()
+        children.setdefault(int(txt.rsplit(") ", 1)[1].split()[1]), []).append(int(s))
+    except Exception:
+        continue
+tree, stack = set(), list(roots)
+while stack:
+    p = stack.pop()
+    if p in tree: continue
+    tree.add(p); stack += children.get(p, [])
+for p in sorted(tree):
+    try:
+        if open(f"/proc/{p}/comm").read().strip() == "claude":
+            print(p)
+    except Exception:
+        pass
+PY
 }
 
-# Backends to SEARCH when resolving an existing session: the forced one, or (auto) every available.
-search_backends() {
-    local b="${OPT_backend:-$CFG_backend}"
-    if [[ "$b" == auto || -z "$b" ]]; then
-        backend_available herdr && echo herdr
-        backend_available tmux && echo tmux
-    else
-        echo "$b"
-    fi
-    return 0
-}
-
-# Which backend hosts THIS process (for self-close / sender identity)?
-current_backend() {
-    if [[ "${HERDR_ENV:-}" == 1 && -n "${HERDR_PANE_ID:-}" ]]; then echo herdr
-    elif [[ -n "${TMUX:-}" ]]; then echo tmux
-    else echo none; fi
-}
-
-# Chat title for a new session. Explicit name wins verbatim if it already has a "device/" part;
-# otherwise rc_prefix (e.g. "dev-serv-in/") is prepended to the name or folder basename.
-make_title() {
-    local name="$1" base="$2"
-    [[ -z "$name" ]] && name="$base"
-    if [[ "$name" == */* || -z "$CFG_rc_prefix" ]]; then printf '%s\n' "$name"
-    else printf '%s%s\n' "$CFG_rc_prefix" "$name"; fi
-}
-
-# Claude launch flags from the effective settings → global array CLAUDE_ARGS.
-build_claude_args() {
-    local title="$1" pm="${OPT_permission_mode:-$CFG_permission_mode}"
-    local model="${OPT_model:-$CFG_model}" effort="${OPT_effort:-$CFG_effort}"
-    CLAUDE_ARGS=()
-    case "$pm" in
-        bypass|bypassPermissions|dangerously-skip-permissions) CLAUDE_ARGS+=(--dangerously-skip-permissions) ;;
-        ""|none) ;;
-        *) CLAUDE_ARGS+=(--permission-mode "$pm") ;;
-    esac
-    # Name Remote Control AT LAUNCH (newer claude auto-attaches RC with a derived name; a
-    # post-launch /remote-control slash only opens the management dialog and ignores the name).
-    CLAUDE_ARGS+=(--remote-control "$title")
-    [[ -n "$OPT_resume" ]] && CLAUDE_ARGS+=(--resume "$OPT_resume")
-    [[ -n "$model" ]] && CLAUDE_ARGS+=(--model "$model")
-    [[ -n "$effort" ]] && CLAUDE_ARGS+=(--effort "$effort")
-    return 0
-}
-
-# Pre-accept bypass mode + pre-trust the folder so claude doesn't stop on a first-run dialog.
-pretrust() {
-    local abs_path="$1"
-    [[ -f "$HOME/.claude.json" ]] || die "~/.claude.json not found — run 'claude' once to initialize"
-    python3 - "$abs_path" <<'PYEOF'
-import json, os, sys, tempfile
-path = sys.argv[1]
-# 1) bypass-permissions confirmation (harmless when another mode is used)
-sp = os.path.expanduser('~/.claude/settings.json')
-os.makedirs(os.path.dirname(sp), exist_ok=True)
-data = {}
-if os.path.exists(sp):
-    try: data = json.load(open(sp))
-    except Exception: data = None
-if data is not None and data.get('bypassPermissionsModeAccepted') is not True:
-    data['bypassPermissionsModeAccepted'] = True
-    json.dump(data, open(sp, 'w'), indent=2)
-# 2) trust the folder in ~/.claude.json (atomic)
-cp = os.path.expanduser('~/.claude.json')
-cfg = json.load(open(cp))
-entry = cfg.setdefault('projects', {}).setdefault(path, {})
-if entry.get('hasTrustDialogAccepted') is not True:
-    entry['hasTrustDialogAccepted'] = True
-    for k, v in {'allowedTools': [], 'mcpContextUris': [], 'mcpServers': {},
-                 'enabledMcpjsonServers': [], 'disabledMcpjsonServers': [],
-                 'projectOnboardingSeenCount': 0, 'hasClaudeMdExternalIncludesApproved': False,
-                 'hasClaudeMdExternalIncludesWarningShown': False, 'exampleFiles': []}.items():
-        entry.setdefault(k, v)
-    fd, tmp = tempfile.mkstemp(prefix='.claude.json.', dir=os.path.dirname(cp))
-    with os.fdopen(fd, 'w') as f: json.dump(cfg, f, indent=2)
-    os.replace(tmp, cp)
-PYEOF
-}
-
-# _kill_claude_pids <pid…> — SIGTERM, escalate to SIGKILL if any linger. Closing a tmux session does
-# NOT stop claude (it ignores SIGHUP and orphans, pinning RAM/swap), so every close finishes it off.
+# _kill_claude_pids <pid…> — SIGTERM for a clean shutdown, escalating to SIGKILL if any linger.
+# Pairs with _claude_pids_in to make kill/self-close actually reclaim memory, not just drop tmux.
 _kill_claude_pids() {
     local pid i alive
     for pid in "$@"; do
@@ -221,204 +205,464 @@ _kill_claude_pids() {
         sleep 0.4
     done
     for pid in "$@"; do kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null; done
-    return 0
-}
-
-# Sender header for session-to-session messages, from the message_header template ({from}).
-make_header() {
-    local from="$1" t="$CFG_message_header"
-    printf '%s' "${t//\{from\}/$from}"
-}
-
-URL_RE='https://claude\.ai/code[/?][A-Za-z0-9._~:/?#@!$&+=%-]+'
-
-# ---------------------------------------------------------------------------
-# usage
-# ---------------------------------------------------------------------------
-usage() {
-    cat <<EOF
-Usage:
-  claude-remote spawn PATH [name] [flags]     Spawn a NEW Claude Code session (Remote Control chat) in PATH
-  claude-remote ls                            List running sessions (every available backend)
-  claude-remote send [--raw] <session> <text…>  Message an EXISTING session (adds a "from … — to reply" header)
-  claude-remote kill <session> | --all        Close a session (and make sure its claude process is gone)
-  claude-remote self-close                    From INSIDE a session: deregister from claude-keep, close itself
-  claude-remote refresh <session>             Re-issue /remote-control for a fresh URL
-  claude-remote heal [--dry-run]              herdr: relaunch sessions that herdr auto-resumed WITHOUT our
-                                              flags (after a herdr restart: RC name / permission mode / model lost)
-  claude-remote config [show|path|init|edit]  Show or create the settings file
-  claude-remote version | help
-
-Spawn flags:
-  --prompt, -p TEXT       Seed the new chat with a first message
-  --prompt-file FILE      Same, read from FILE (multi-line, any quotes — no shell quoting issues)
-  --resume, -r UUID       Resume an existing conversation instead of starting fresh
-  --model, -m M           Model alias/id            (default: config 'model' → claude's own)
-  --effort, -e E          low|medium|high|xhigh|max (default: config 'effort')
-  --permission-mode PM    bypass|auto|acceptEdits|default|plan (default: config 'permission_mode')
-  --url, -u               Also print the claude.ai/code URL
-Global flag (any command):
-  --backend B             tmux|herdr|auto — override the config for this call
-
-[name] = chat title. Default: rc_prefix + folder name. A name containing "/" is used verbatim.
-<session> = the chat title, its tail after "device/", or a backend id (tmux name / herdr agent / pane).
-
-Settings file: $CONFIG_FILE  (claude-remote config show)
-EOF
 }
 
 # ---------------------------------------------------------------------------
-# spawn (shared arg parsing → backend)
+# spawn
 # ---------------------------------------------------------------------------
-OPT_resume="" OPT_model="" OPT_effort="" OPT_permission_mode="" OPT_backend=""
 cmd_spawn() {
-    local show_url=0 start_prompt="" f
+    # Flags may appear anywhere among the args. Default: status only, no URL.
+    # Pass --url (-u) to also print the claude.ai/code URL.
+    # Pass --resume <uuid> to resume an existing session by its UUID instead
+    # of starting a new conversation in the pane.
+    # Pass --model <alias> to launch on a specific model (alias like opus/sonnet/
+    # fable, or a full id like claude-opus-4-8). Default: claude's own default.
+    local show_url=0
+    local resume_uuid=""
+    local model=""
+    local effort=""
+    local start_prompt=""
     local -a pos=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --url|-u)   show_url=1 ;;
-            --prompt|-p)      [[ -n "${2:-}" ]] || die "--prompt requires text"; start_prompt="$2"; shift ;;
-            --prompt-file)    f="${2:-}"; [[ -f "$f" ]] || die "--prompt-file: no such file: $f"
-                              start_prompt=$(cat "$f"); shift ;;
-            --resume|-r)      [[ -n "${2:-}" ]] || die "--resume requires a session UUID"; OPT_resume="$2"; shift ;;
-            --model|-m)       [[ -n "${2:-}" ]] || die "--model requires a model alias or id"; OPT_model="$2"; shift ;;
-            --effort|-e)      [[ -n "${2:-}" ]] || die "--effort requires a level"; OPT_effort="$2"; shift ;;
-            --permission-mode) [[ -n "${2:-}" ]] || die "--permission-mode requires a mode"; OPT_permission_mode="$2"; shift ;;
+            --prompt|-p)
+                [[ -n "${2:-}" ]] || die "--prompt requires text"
+                start_prompt="$2"
+                shift
+                ;;
+            --resume|-r)
+                [[ -n "${2:-}" ]] || die "--resume requires a session UUID"
+                resume_uuid="$2"
+                shift
+                ;;
+            --model|-m)
+                [[ -n "${2:-}" ]] || die "--model requires a model alias or id"
+                model="$2"
+                shift
+                ;;
+            --effort|-e)
+                [[ -n "${2:-}" ]] || die "--effort requires a level (low|medium|high|xhigh|max)"
+                effort="$2"
+                shift
+                ;;
             --)         shift; while [[ $# -gt 0 ]]; do pos+=("$1"); shift; done; break ;;
-            -*)         die "spawn: unknown flag '$1' (see claude-remote help)" ;;
             *)          pos+=("$1") ;;
         esac
         shift
     done
 
-    local raw_path="${pos[0]:-}" name="${pos[1]:-}"
+    local raw_path="${pos[0]:-}"
+    local name="${pos[1]:-}"
     [[ -z "$raw_path" ]] && { usage; exit 2; }
+
+    command -v tmux    >/dev/null || die "tmux not found"
+    local CLAUDE_BIN
+    CLAUDE_BIN=$(resolve_claude) || die "claude not found (checked PATH, ~/.npm-global/bin, ~/.local/bin, ~/.claude/local)"
+    command -v python3 >/dev/null || die "python3 not found"
+    [[ -f "$HOME/.claude.json" ]] || die "~/.claude.json not found — run 'claude' once to initialize"
 
     local abs_path
     abs_path=$(python3 -c 'import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$raw_path")
-    [[ -d "$abs_path" ]] || mkdir -p "$abs_path"
 
-    local title; title=$(make_title "$name" "$(basename "$abs_path")")
-    local backend; backend=$(pick_backend)
-    [[ "$backend" == none ]] && die "no session backend available (install tmux or herdr)"
-    pretrust "$abs_path"
-    "${backend}_spawn" "$abs_path" "$title" "$show_url" "$start_prompt"
+    local is_new=0
+    [[ -d "$abs_path" ]] || is_new=1
+    (( is_new )) && mkdir -p "$abs_path"
+
+    local base session_name tmux_name final_name
+    base=$(basename "$abs_path")
+    # Session name = remote-control chat title. Defaults to the folder name
+    # (clean, no timestamp). Nothing is prepended automatically — pass the name
+    # in full (e.g. "mac-mini/ai-auth-lib") if you want a "device/" prefix.
+    [[ -z "$name" ]] && name="$base"
+
+    # Pick a free name. The collision check must be EXACT: `tmux has-session -t X`
+    # matches on an unambiguous PREFIX, so spawning "dev" when a "dev-helper"
+    # session exists would falsely "collide" and bump to "dev-2". Compare full
+    # session names with `grep -xF` instead (handles the em-dash and slashes).
+    # On a REAL collision, number BOTH the tmux session AND the chat title, so the
+    # two chats are distinguishable on the device (not two identically-named ones).
+    final_name="$name"
+    local i=2
+    while tmux list-sessions -F '#{session_name}' 2>/dev/null \
+            | grep -qxF -- "cc${EM}${final_name}"; do
+        final_name="${name}-${i}"
+        ((i++))
+    done
+    session_name="cc${EM}${final_name}"
+    tmux_name="$session_name"
+
+    # Pre-accept bypass-permissions mode so claude won't pause on the
+    # one-time confirmation dialog on its first --dangerously-skip-permissions run.
+    # Idempotent: only writes the flag, preserves any other settings.
+    python3 - <<'PYEOF'
+import json, os
+path = os.path.expanduser('~/.claude/settings.json')
+os.makedirs(os.path.dirname(path), exist_ok=True)
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+if data.get('bypassPermissionsModeAccepted') is not True:
+    data['bypassPermissionsModeAccepted'] = True
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+PYEOF
+
+    # Pre-trust path in ~/.claude.json (atomic)
+    python3 - "$abs_path" <<'PYEOF'
+import json, os, sys, tempfile
+path = sys.argv[1]
+cfg_path = os.path.expanduser('~/.claude.json')
+with open(cfg_path) as f:
+    cfg = json.load(f)
+projs = cfg.setdefault('projects', {})
+entry = projs.setdefault(path, {})
+entry['hasTrustDialogAccepted'] = True
+defaults = {
+    'allowedTools': [],
+    'mcpContextUris': [],
+    'mcpServers': {},
+    'enabledMcpjsonServers': [],
+    'disabledMcpjsonServers': [],
+    'projectOnboardingSeenCount': 0,
+    'hasClaudeMdExternalIncludesApproved': False,
+    'hasClaudeMdExternalIncludesWarningShown': False,
+    'exampleFiles': [],
+}
+for k, v in defaults.items():
+    entry.setdefault(k, v)
+fd, tmp = tempfile.mkstemp(prefix='.claude.json.', dir=os.path.dirname(cfg_path))
+with os.fdopen(fd, 'w') as f:
+    json.dump(cfg, f, indent=2)
+os.replace(tmp, cfg_path)
+PYEOF
+
+    tmux new-session -d -s "$tmux_name" -c "$abs_path"
+
+    # Chat title follows the (possibly numbered) final name, so a collision-bumped
+    # session shows as "name-2" on the device instead of a duplicate "name".
+    local claude_name="$final_name"
+
+    # Build the claude launch command. With --resume <uuid>, claude reopens that
+    # specific session in this pane instead of starting a fresh conversation.
+    local claude_cmd="$CLAUDE_BIN --dangerously-skip-permissions"
+    # Enable Remote Control AT LAUNCH with our chat title, via the --remote-control <name>
+    # flag. This replaces the old post-launch `/remote-control <name>` slash: newer claude
+    # AUTO-attaches RC on startup with a derived name (e.g. "fleetos-30") BEFORE the slash
+    # could run, and a slash on an already-active RC only opens the management dialog — it
+    # ignores the name, so the chat kept the wrong title and the seed prompt got eaten in
+    # the race. Naming RC at launch sidesteps all of that (title lands, composer stays clear).
+    claude_cmd+=" --remote-control $(printf %q "$claude_name")"
+    if [[ -n "$resume_uuid" ]]; then
+        claude_cmd+=" --resume $resume_uuid"
+    fi
+    if [[ -n "$model" ]]; then
+        claude_cmd+=" --model $model"
+    fi
+    if [[ -n "$effort" ]]; then
+        claude_cmd+=" --effort $effort"
+    fi
+
+    # Start interactive Claude with Remote Control already enabled + named.
+    tmux send-keys -t "$tmux_name" "$claude_cmd" Enter
+
+    # Wait for the TUI to reach ready state (bottom bar shows "bypass permissions on").
+    # Trust dialog is skipped because we pre-wrote hasTrustDialogAccepted above.
+    local ready=0
+    local ready_iters
+    ready_iters=$(awk 'BEGIN{print int(40/0.5)}')
+    for _ in $(seq 1 "$ready_iters"); do
+        local pane
+        pane=$(tmux capture-pane -p -J -t "$tmux_name" -S -200 2>/dev/null || true)
+        if printf '%s' "$pane" | grep -q 'bypass permissions on'; then
+            ready=1
+            break
+        fi
+        sleep 0.5
+    done
+
+    if (( !ready )); then
+        echo "claude-remote: claude TUI didn't reach ready state in 40s — check 'tmux attach -t $tmux_name'" >&2
+        exit 1
+    fi
+
+    # Remote Control is already enabled + named via the launch flag above — no post-launch
+    # slash needed (and issuing one would only pop the RC management dialog on the now-active
+    # session). We just poll below to CONFIRM it came up.
+
+    local url="" rc_active=0 confirmed_rc=0 iters
+    iters=$(awk -v t="$URL_TIMEOUT_S" -v s="$POLL_INTERVAL_S" 'BEGIN{print int(t/s)}')
+    for _ in $(seq 1 "$iters"); do
+        local pane
+        pane=$(tmux capture-pane -p -J -t "$tmux_name" -S -200 2>/dev/null || true)
+        # Auto-confirm the "Enable Remote Control" prompt (default option 1)
+        # that appears the first time /remote-control runs in a session.
+        if (( !confirmed_rc )) && printf '%s' "$pane" | grep -q 'Enable Remote Control'; then
+            tmux send-keys -t "$tmux_name" Enter
+            confirmed_rc=1
+            sleep 0.5
+            continue
+        fi
+        # Primary success signal is the persistent "Remote Control active" status
+        # bar — NOT the URL. The URL is only needed for --url, and it can appear
+        # late or scroll out of the captured window, which used to cause a false
+        # "not detected" + exit 1 even though RC was up.
+        printf '%s' "$pane" | grep -qiE 'Remote Control active|remote-control is active' && rc_active=1
+        # Corroborating AUTHORITATIVE signal — Remote Control registered in the state file
+        # (bridgeSessionId). OR'd with the TUI scrape above: whichever confirms first wins, so a
+        # lagging/reworded status bar no longer false-fails a session that's actually up. Only
+        # probed until confirmed, to avoid the per-iteration cost once rc_active is set.
+        (( rc_active )) || { _bridge_up "$tmux_name" "$abs_path" && rc_active=1; }
+        if [[ -z "$url" ]]; then
+            url=$(printf '%s' "$pane" | grep -oE 'https://claude\.ai/code[/?][A-Za-z0-9._~:/?#@!$&+=%-]+' | tail -1 || true)
+        fi
+        # Done once RC is active (and, if --url was asked, once we also have the URL).
+        if (( rc_active )) && { (( !show_url )) || [[ -n "$url" ]]; }; then break; fi
+        sleep "$POLL_INTERVAL_S"
+    done
+
+    # --prompt: seed the fresh chat — type the starting prompt into the pane and submit it.
+    # Sent literally (-l; -- guards a leading dash) once Remote Control is confirmed up, so it
+    # lands in the now-clear composer. tmux needs a beat between the text and the Enter.
+    local prompt_sent=0
+    if [[ -n "$start_prompt" ]] && (( rc_active )); then
+        tmux send-keys -t "$tmux_name" -l -- "$start_prompt"
+        sleep 0.4
+        tmux send-keys -t "$tmux_name" Enter
+        prompt_sent=1
+    fi
+
+    printf 'SESSION: %s\n' "$tmux_name"
+    if (( show_url )); then
+        if [[ -n "$url" ]]; then
+            printf 'URL:     %s\n' "$url"
+        elif (( rc_active )); then
+            printf 'URL:     <RC active; link not captured — run: claude-remote refresh %q>\n' "$tmux_name"
+        else
+            printf 'URL:     <remote-control did not come up within %ss — check pane>\n' "$URL_TIMEOUT_S"
+        fi
+    else
+        if (( rc_active )); then
+            printf 'STATUS:  remote-control active\n'
+        else
+            printf 'STATUS:  remote-control did NOT activate within %ss — check pane\n' "$URL_TIMEOUT_S"
+        fi
+    fi
+    printf "ATTACH:  tmux attach -t '%s'\n" "$tmux_name"
+    (( prompt_sent )) && printf 'PROMPT:  sent (%d chars)\n' "${#start_prompt}"
+
+    # Fail only if Remote Control genuinely never activated (not merely "no URL").
+    if (( !rc_active )); then
+        echo "claude-remote: --- last 30 lines of pane '$tmux_name' ---" >&2
+        tmux capture-pane -p -J -t "$tmux_name" -S -30 2>/dev/null >&2 || true
+        exit 1
+    fi
 }
 
 # ---------------------------------------------------------------------------
-# resolve an existing session across backends → sets R_BACKEND + R_ID
+# refresh — re-issue /remote-control inside an existing session to get a fresh URL
 # ---------------------------------------------------------------------------
-resolve_any() {
-    local q="$1" b out rc found=0 errs=""
-    R_BACKEND="" R_ID=""
-    while IFS= read -r b; do
-        [[ -n "$b" ]] || continue
-        if out=$("${b}_resolve" "$q" 2>&1); then
-            R_BACKEND="$b"; R_ID="$out"; found=1; break
-        else
-            rc=$?
-            (( rc == 2 )) && { echo "$out" >&2; return 2; }   # ambiguous — never guess
-            errs+="$b: $out"$'\n'
+cmd_refresh() {
+    local name="${1:-}"
+    [[ -z "$name" ]] && { echo "usage: claude-remote refresh <session>" >&2; exit 2; }
+    tmux has-session -t "$name" 2>/dev/null || die "no such session: $name"
+
+    # Capture the URL currently printed (if any) so we can detect the new one.
+    local old_url
+    old_url=$(tmux capture-pane -p -J -t "$name" -S -300 \
+              | grep -oE 'https://claude\.ai/code[/?][A-Za-z0-9._~:/?#@!$&+=%-]+' \
+              | tail -1 || true)
+
+    tmux send-keys -t "$name" '/remote-control' Enter
+
+    local url=""
+    local iters
+    iters=$(awk -v t="$URL_TIMEOUT_S" -v s="$POLL_INTERVAL_S" 'BEGIN{print int(t/s)}')
+    for _ in $(seq 1 "$iters"); do
+        local pane
+        pane=$(tmux capture-pane -p -J -t "$name" -S -300 2>/dev/null || true)
+        local cand
+        cand=$(printf '%s' "$pane" | grep -oE 'https://claude\.ai/code[/?][A-Za-z0-9._~:/?#@!$&+=%-]+' | tail -1 || true)
+        if [[ -n "$cand" && "$cand" != "$old_url" ]]; then
+            url="$cand"
+            break
         fi
-    done < <(search_backends)
-    (( found )) && return 0
-    printf 'no such session: %s\n%s' "$q" "$errs" >&2
+        sleep "$POLL_INTERVAL_S"
+    done
+
+    printf 'SESSION: %s\n' "$name"
+    if [[ -n "$url" ]]; then
+        printf 'URL:     %s\n' "$url"
+    else
+        printf 'URL:     <no new URL within %ss — old still: %s>\n' "$URL_TIMEOUT_S" "${old_url:-none}"
+    fi
+    [[ -n "$url" ]] || exit 1
+}
+
+# ---------------------------------------------------------------------------
+# ls
+# ---------------------------------------------------------------------------
+cmd_list() {
+    local rows
+    rows=$(tmux list-sessions -F '#{session_name}|#{session_path}' 2>/dev/null | grep '^cc—' || true)
+    if [[ -z "$rows" ]]; then
+        echo "(no cc— sessions running)"
+        return
+    fi
+    printf '%-50s  %s\n' "SESSION" "PATH"
+    printf '%s\n' "$rows" | awk -F'|' '{ printf "%-50s  %s\n", $1, $2 }'
+}
+
+# ---------------------------------------------------------------------------
+# kill <name> | kill --all
+# ---------------------------------------------------------------------------
+cmd_kill() {
+    case "${1:-}" in
+        "")
+            echo "claude-remote kill: missing <name> or --all" >&2
+            exit 2
+            ;;
+        --all)
+            local names
+            names=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^cc—' || true)
+            if [[ -z "$names" ]]; then
+                echo "(no cc— sessions to kill)"
+                return
+            fi
+            local pids
+            while IFS= read -r n; do
+                pids=$(_claude_pids_in "$n")                 # capture BEFORE the tmux kill
+                tmux kill-session -t "$n" && echo "killed: $n"
+                [[ -n "$pids" ]] && _kill_claude_pids $pids  # claude survives tmux kill — finish it off
+            done <<< "$names"
+            ;;
+        *)
+            local name pids
+            name=$(_resolve_session "$1") || exit 1   # accept chat title / bare name / full tmux name
+            pids=$(_claude_pids_in "$name")           # capture BEFORE the tmux kill
+            tmux kill-session -t "=$name" && echo "killed: ${name#cc—}"
+            [[ -n "$pids" ]] && _kill_claude_pids $pids   # claude detaches from tmux — kill it directly
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# _resolve_session <id> — map a user-given identifier to its exact `cc—…` tmux session name.
+# The user thinks in Claude Code chat titles (what the device shows); the `cc—` tmux prefix is an
+# internal detail. Accepts, in match order:
+#   1. the full tmux name        cc—dev-serv-in/fleetos-devops
+#   2. the chat title (no cc—)   dev-serv-in/fleetos-devops
+#   3. a bare tail               fleetos-devops   (the segment after device/, matched as a WHOLE
+#                                segment — "fleetos" matches …/fleetos, NOT …/fleetos-devops)
+# Prints the resolved name on success; on ambiguity or no match, prints an error and returns non-zero
+# (never guesses). Used by `send` and `kill`.
+# ---------------------------------------------------------------------------
+_resolve_session() {
+    local q="$1" names n
+    local -a hits=()
+    names=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^cc—' || true)
+    [[ -n "$names" ]] || { echo "no cc— sessions running" >&2; return 1; }
+    while IFS= read -r n; do [[ "$n" == "$q" ]]     && { printf '%s\n' "$n"; return 0; }; done <<< "$names"
+    while IFS= read -r n; do [[ "$n" == "cc—$q" ]]  && { printf '%s\n' "$n"; return 0; }; done <<< "$names"
+    while IFS= read -r n; do
+        [[ "$n" == *"/$q" || "${n#cc—}" == "$q" ]] && hits+=("$n")
+    done <<< "$names"
+    if (( ${#hits[@]} == 1 )); then printf '%s\n' "${hits[0]}"; return 0; fi
+    if (( ${#hits[@]} > 1 )); then
+        { echo "ambiguous session '$q' — matches:"; printf '  %s\n' "${hits[@]}"; echo "be more specific."; } >&2
+        return 2
+    fi
+    echo "no such session: $q" >&2
     return 1
 }
 
-cmd_ls() {
-    local b any=0
-    while IFS= read -r b; do
-        [[ -n "$b" ]] || continue
-        any=1
-        echo "## $b"
-        "${b}_ls"
-    done < <(search_backends)
-    (( any )) || echo "(no session backend available — install tmux or herdr)"
-}
-
+# ---------------------------------------------------------------------------
+# send [--raw] <session> <text…> — inject a message into an EXISTING session's pane and
+# submit it. The "talk to a session that's already running" gap: spawn seeds a NEW chat
+# (--prompt), this drives an existing one. Sent literally (-l; -- guards a leading dash);
+# if the target is mid-generation the message simply queues (Claude handles the queue).
+#
+# By default the message is prefixed with a one-line header naming the SENDER session and
+# how to reply — so the receiver knows whose question it is and can answer back:
+#     [from cc—X — reply: claude-remote send 'cc—X' "…"] <text>
+# The sender is this command's own tmux session ($TMUX). Pass --raw to send verbatim (no
+# header) — e.g. when injecting a command/prompt rather than a session-to-session message.
+# ---------------------------------------------------------------------------
 cmd_send() {
-    local raw=0
+    local raw=0 from="" from_clean=""
     [[ "${1:-}" == "--raw" ]] && { raw=1; shift; }
     local q="${1:-}"; shift || true
     local text="$*"
     [[ -n "$q" ]] || die "send: usage: claude-remote send [--raw] <session> <text…>"
     [[ -n "$text" ]] || die "send: nothing to send (give the message after the session name)"
-    resolve_any "$q" || exit 1
-    local from="" cb; cb=$(current_backend)
-    if (( !raw )) && [[ "$cb" != none ]]; then
-        from=$("${cb}_whoami" 2>/dev/null || true)
-        [[ -n "$from" ]] && text="$(make_header "$from") ${text}"
+    command -v tmux >/dev/null || die "tmux not found"
+    # Accept a chat title / bare name / full tmux name — resolve to the exact tmux session.
+    local name; name=$(_resolve_session "$q") || exit 1
+    local pane
+    pane=$(tmux list-panes -a -F "#{session_name}"$'\t'"#{pane_id}" 2>/dev/null \
+             | awk -F'\t' -v s="$name" '$1==s{print $2; exit}')
+    [[ -n "$pane" ]] || die "send: no pane for $name"
+    # Prefix with sender + reply hint (using the CLEAN chat title, no cc—, so the reply command is
+    # copy-pasteable), unless --raw or we're not inside a (different) session.
+    if (( ! raw )); then
+        from=$(tmux display-message -p '#{session_name}' 2>/dev/null || true)
+        from_clean="${from#cc—}"
+        [[ -n "$from" && "$from" != "$name" ]] && \
+            text="[from ${from_clean} — to reply: claude-remote send '${from_clean}' \"<your answer>\"] ${text}"
     fi
-    "${R_BACKEND}_send" "$R_ID" "$text" "$from"
+    if tmux capture-pane -p -J -t "$pane" -S -3 2>/dev/null | grep -q 'esc to interrupt'; then
+        echo "note: '${name#cc—}' is busy — the message will queue until it's idle" >&2
+    fi
+    tmux send-keys -t "$pane" -l -- "$text"
+    sleep 0.4
+    tmux send-keys -t "$pane" Enter
+    echo "sent to ${name#cc—} (${#text} chars${from_clean:+, from $from_clean})"
 }
 
-cmd_kill() {
-    case "${1:-}" in
-        "") echo "claude-remote kill: missing <session> or --all" >&2; exit 2 ;;
-        --all)
-            local b
-            while IFS= read -r b; do [[ -n "$b" ]] && "${b}_kill_all"; done < <(search_backends) ;;
-        *)
-            resolve_any "$1" || exit 1
-            "${R_BACKEND}_kill" "$R_ID" ;;
-    esac
-}
-
-cmd_refresh() {
-    [[ -n "${1:-}" ]] || { echo "usage: claude-remote refresh <session>" >&2; exit 2; }
-    resolve_any "$1" || exit 1
-    "${R_BACKEND}_refresh" "$R_ID"
-}
-
+# ---------------------------------------------------------------------------
+# self-close — a running session ends ITSELF: first deregister from the keeper's
+# registry, then drop its own tmux session. Registry and session lifecycle live in TWO
+# SEPARATE skills, so we keep them decoupled: this (a session-lifecycle op) belongs to
+# claude-remote, and it DELEGATES the registry cleanup to claude-keep's own self-aware
+# `rm` (only if that skill is installed — no hard dependency, no duplicated registry logic).
+# Order matters: unregister BEFORE we die, so a self-heal timer doesn't relaunch us.
+# ---------------------------------------------------------------------------
 cmd_self_close() {
-    local cb; cb=$(current_backend)
-    [[ "$cb" == none ]] && die "self-close: not inside a tmux or herdr session (run it from within the session)"
+    command -v tmux >/dev/null || die "self-close: tmux not found"
+    local self
+    self=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+    [[ -n "$self" ]] || die "self-close: not inside a tmux session (run this from within the session)"
     if command -v claude-keep >/dev/null 2>&1; then
-        claude-keep rm >/dev/null 2>&1 && echo "deregistered from claude-keep" \
+        claude-keep rm >/dev/null 2>&1 && echo "deregistered from claude-keep: $self" \
             || echo "note: not tracked by claude-keep (nothing to deregister)"
     fi
-    "${cb}_self_close"
-}
-
-cmd_heal() {
-    backend_available herdr || die "heal: herdr is not running here (heal is herdr-only; tmux sessions are healed by claude-keep)"
-    herdr_heal "$@"
+    echo "self-close: killing tmux session '$self' …"
+    local pids; pids=$(_claude_pids_in "$self")   # capture our own claude pid BEFORE dropping tmux
+    tmux kill-session -t "=$self"                 # drops the pane; claude may survive it (orphan)
+    [[ -n "$pids" ]] && _kill_claude_pids $pids   # …so kill the process too, or it leaks after we "close"
 }
 
 # ---------------------------------------------------------------------------
 # dispatch
 # ---------------------------------------------------------------------------
-# --backend may appear anywhere; strip it before dispatch.
-_args=()
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --backend) [[ -n "${2:-}" ]] || die "--backend requires tmux|herdr|auto"; OPT_backend="$2"; shift 2 ;;
-        --backend=*) OPT_backend="${1#--backend=}"; shift ;;
-        *) _args+=("$1"); shift ;;
-    esac
-done
-set -- "${_args[@]+"${_args[@]}"}"
-
-load_config
-# shellcheck source=../lib/backend-tmux.sh
-source "$SCRIPT_ROOT/lib/backend-tmux.sh"
-# shellcheck source=../lib/backend-herdr.sh
-source "$SCRIPT_ROOT/lib/backend-herdr.sh"
-
 case "${1:-}" in
     -h|--help|help) usage ;;
     -V|--version|version) cmd_version ;;
-    "")         usage; exit 2 ;;
-    ls|list)    cmd_ls ;;
-    kill)       shift; cmd_kill "$@" ;;
-    spawn)      shift; cmd_spawn "$@" ;;
-    refresh)    shift; cmd_refresh "$@" ;;
-    send)       shift; cmd_send "$@" ;;
+    "")        usage; exit 2 ;;
+    ls)        cmd_list ;;
+    kill)      shift; cmd_kill "$@" ;;
+    spawn)     shift; cmd_spawn "$@" ;;
+    refresh)   shift; cmd_refresh "$@" ;;
+    send)      shift; cmd_send "$@" ;;
     self-close) cmd_self_close ;;
-    heal)       shift; cmd_heal "$@" ;;
-    config)     shift; cmd_config "$@" ;;
-    # Spawning is EXPLICIT — an unknown command errors, it can never spawn a junk session.
-    *)          die "unknown command '$1'. To spawn a session: claude-remote spawn <path> [name].
-   Subcommands: spawn · ls · send · kill · refresh · self-close · heal · config · version · help" ;;
+    # Spawning is EXPLICIT — `claude-remote spawn <path> [name]`, nothing else. There is no
+    # implicit "bare arg = spawn this" default: that silently turned mistyped subcommands into junk
+    # sessions (a whole batch of cc—list / cc—sessions / cc——all appeared when agents tried to LIST
+    # with the wrong verb). An unknown command now errors with a hint — it can never spawn.
+    *)         die "unknown command '$1'. To spawn a session: claude-remote spawn <path> [name].
+   Subcommands: spawn · ls · send · kill · refresh · self-close · version · help" ;;
 esac
