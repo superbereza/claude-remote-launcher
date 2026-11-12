@@ -1,0 +1,30 @@
+# claude-remote settings — copy to ~/.config/claude-remote/config.toml
+# (`claude-remote config init` does it), then `claude-remote config show` to check.
+# Precedence: built-in default < this file < CLAUDE_REMOTE_<KEY> env var < command-line flag.
+# The values below are the owner's defaults (superbereza on dev-server-india).
+
+# Session backend: "auto" (herdr if its server is running, else tmux) | "tmux" | "herdr".
+# One-off override: claude-remote --backend tmux spawn …
+backend = "auto"
+
+# Prepended to every chat title unless the name you pass already contains "/".
+# Convention: "<device>/" so chats from different machines are told apart on the phone.
+# Built-in default: "" (no prefix).  On the Mac use e.g. "mac-mini/".
+rc_prefix = "dev-serv-in/"
+
+# Claude permission mode for new sessions:
+#   "bypass" (= --dangerously-skip-permissions) | "auto" | "acceptEdits" | "default" | "plan"
+# Built-in default: "bypass".
+permission_mode = "auto"
+
+# Model alias/id and effort level for new sessions. "" = claude's own default.
+model = ""
+effort = ""
+
+# Absolute paths, if auto-detection guesses wrong ("" = auto-detect).
+claude_bin = ""      # e.g. "~/.npm-global/bin/claude"
+herdr_bin = ""       # e.g. "~/.local/bin/herdr"
+
+# Header put in front of `claude-remote send` messages so the receiver knows who asks
+# and how to answer. {from} = the sender session's chat title. `send --raw` skips it.
+message_header = "[from {from} — to reply: claude-remote send '{from}' \"<your answer>\"]"

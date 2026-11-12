@@ -1,7 +1,7 @@
 {
   "name": "claude-remote",
-  "version": "2.0.3",
-  "description": "Launch Claude Code Remote Control sessions in a detached tmux pane and get the claude.ai/code URL.",
+  "version": "3.0.0",
+  "description": "Spawn, message and close Claude Code Remote Control sessions on tmux or herdr (pluggable backend, settings file) + a tmux→herdr migration skill — skill + CLI.",
   "author": {
     "name": "superbereza",
     "url": "https://github.com/superbereza"
@@ -12,6 +12,7 @@
     "claude-code",
     "remote-control",
     "tmux",
+    "herdr",
     "cli",
     "skills"
   ],

@@ -7,8 +7,8 @@
   "plugins": [
     {
       "name": "claude-remote",
-      "description": "Launch Claude Code Remote Control sessions in tmux and get the claude.ai/code URL — CLI + skill",
-      "version": "2.0.3",
+      "description": "Spawn, message and close Claude Code Remote Control sessions on tmux or herdr (pluggable backend, settings file) + a tmux→herdr migration skill — skill + CLI.",
+      "version": "3.0.0",
       "source": "./"
     }
   ]
