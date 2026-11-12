@@ -12,6 +12,14 @@ server that keeps panes alive like tmux, but *recognizes* the agent in a pane (`
 claude-keep self-heal timer for Claude sessions. It does **not** replace tmux/systemd for ordinary
 long-running services — leave those alone.
 
+> **The only thing to keep alive is the herdr server itself — nothing else.** No keeper timer, no
+> restore/RC-reissue service: once the server starts, it brings every Claude pane back on its own.
+> But the server does not start by itself (any CLI call without it answers `server_not_running`):
+> on a headless Linux box that's one systemd user unit + linger (step 1); on a Mac it starts when
+> the herdr app/TUI is opened — after a reboot nothing comes back until someone opens herdr.
+> `claude-remote heal` is not a service either: sessions are alive without it, it only restores
+> their chat title / permission mode / model.
+
 After the migration, sessions are still driven with `claude-remote` (its `herdr` backend), so
 agents' habits don't change.
 
