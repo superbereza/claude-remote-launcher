@@ -8,7 +8,7 @@
     {
       "name": "claude-remote",
       "description": "Launch Claude Code Remote Control sessions in tmux and get the claude.ai/code URL — CLI + skill",
-      "version": "4.0.0",
+      "version": "4.0.1",
       "source": "./"
     }
   ]

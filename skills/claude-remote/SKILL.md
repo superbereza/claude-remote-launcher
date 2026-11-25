@@ -119,6 +119,32 @@ URL (which can appear late or scroll out of view).
 8. Confirms Remote Control came up — from **two** signals, whichever fires first: the `Remote Control active` status bar in the pane, **or** a `bridgeSessionId` in Claude's per-process state file `~/.claude/sessions/<pid>.json` (authoritative — matched to this session by cwd, else by the pane's process tree). This makes startup detection robust to a lagging/reworded status bar.
 9. With `--prompt <text>`, types the starting prompt into the pane and submits it. Prints the status (or the URL with `--url`). Tmux session keeps running.
 
+## When the signed-in claude.ai account changes
+
+If the machine's claude.ai login (account **or** org) changes, **every** running session's Remote
+Control goes dead at once — the pane shows `Remote Control disconnected — signed-in claude.ai account
+or organization changed on this machine`. The conversations keep running locally; only their RC chats
+are stale (bound to the old account).
+
+A plain relaunch does **not** fix the name/binding: on resume Claude **re-attaches the conversation's
+existing server-side chat** and keeps its old name. To move a session onto the current account with a
+clean chat you must **release the old chat first, then relaunch**:
+
+1. In the pane: `/remote-control` → ↑ to **"Disconnect this session"** → Enter (wait for `Remote
+   Control disconnected`).
+2. Relaunch the conversation with the name flag: `claude --resume <uuid> --remote-control '<name>'
+   --dangerously-skip-permissions` (a **fresh** chat with the right name is created; the released old
+   one does not linger).
+
+Big/old conversations pop a **"Resume this conversation? 1. Resume / 2. Start new"** dialog — pick
+**1** (2 discards the history). RC can take 30–60 s to attach on huge sessions; confirm via a
+`bridgeSessionId` in `~/.claude/sessions/<pid>.json`, not the (flood-prone) status line.
+
+> For **many** sessions at once, or on herdr, this is automated: **`agent-sessions reconnect --all`**
+> (the successor tool) does the disconnect+relaunch for every session, and its `heal` runs it
+> automatically when it detects the account changed. `claude-remote` itself stays single-session /
+> manual.
+
 ## Talking to a running session, and ending one (`send` / `self-close`)
 
 - **Refer to sessions by their chat title, not the tmux name.** `send` and `kill` accept a session by
